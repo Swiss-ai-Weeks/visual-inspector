@@ -1,387 +1,145 @@
-# 🎮 Motion Sequence Challenge
+# 🎮 MoveMatch
 
-> **A video-based game where players watch, remember, and reproduce sequences of movements — while AI checks whether they performed the correct actions in the correct order.**
+> **Watch the sequence. Reproduce the moves. Let AI decide who got it right.**
 
-## 🚀 Project Overview
+**Motion Sequence Challenge** is an AI-powered movement game where players reproduce a sequence of actions shown on screen.
 
-**Motion Sequence Challenge** is a fun, interactive game inspired by sequence-based games such as *Taco, Chapeau, Gâteau, Cadeau, Pizza*.
+A camera records the players, and the app uses computer vision to determine **who performed the correct movements, in the correct order, within the time limit**.
 
-The concept is simple:
+## 🎯 How It Works
 
-1. Players are shown a sequence of movements on a screen.
-2. They have a limited amount of time to reproduce the sequence.
-3. A camera records their movements.
-4. AI detects the players and analyzes their actions over time.
-5. The system determines whether each player reproduced the **right movements, in the right order**.
-6. Players receive a success/failure result and are ranked against the others.
+**1. Watch**
+The app displays a movement sequence.
 
-The project combines **computer vision, temporal action understanding, and gamification** into a local web application.
+👏 → 🙆 → 👇 → 👏
 
----
+**2. Perform**
+Players have **5 seconds** to reproduce it.
 
-## 🎯 Main Goal
+**3. Analyze**
+The AI detects and tracks each player, recognizes their movements, and reconstructs the sequence.
 
-The main goal is to build an AI-powered system capable of answering:
+**4. Verify**
+Expected:
 
-> **"Did this person correctly reproduce the requested sequence of movements?"**
-
-This is more than simple pose or object detection. The system needs to understand **what happened over time** and verify that the required sequence of actions was followed.
-
-For example:
-
-```text
-Displayed sequence:
-
-👏  →  🙆  →  👇  →  👏
+👏 → 🙆 → 👇 → 👏
 
 Player:
 
-👏  →  🙆  →  👇  →  👏
-
-             ✅ SUCCESS
-```
-
-Whereas:
-
-```text
-Displayed sequence:
-
-👏  →  🙆  →  👇  →  👏
-
-Player:
-
-👏  →  👇  →  🙆  →  👏
-
-             ❌ FAILED
-             Wrong order
-```
-
----
-
-# 🏆 Hackathon MVP
-
-Our objective is to build a functional end-to-end prototype during the hackathon.
-
-### Core Features
-
-* 📹 **Upload a video**
-
-  * Upload recorded footage of players performing the challenge.
-
-* 📝 **Display instructions**
-
-  * Show the sequence of movements that players need to reproduce.
-
-* 👤 **Person detection & tracking**
-
-  * Detect participants in the video.
-  * Assign a persistent ID to each person.
-  * Track each participant throughout the sequence.
-
-* 🕺 **Movement detection**
-
-  * Determine which movement each participant performs.
-
-* 🔢 **Sequence verification**
-
-  * Check whether the participant performed:
-
-    * the correct movements,
-    * in the correct order,
-    * within the allowed time.
-
-* ⏱️ **5-second response window**
-
-  * Players have **5 seconds** to reproduce the requested sequence.
-
-* ✅ **Result**
-
-  * Determine whether each participant succeeded or failed.
-
-* 🏅 **Ranking**
-
-  * Rank participants based on their performance.
-
-* 💾 **Persistent IDs**
-
-  * Player IDs should remain consistent between sessions.
-
-* 🗄️ **Local data storage**
-
-  * Keep all relevant data locally during the hackathon.
-
-* 🌐 **Local web interface**
-
-  * Provide a simple web interface to run and interact with the game locally.
-
----
-
-# 🧠 AI Strategy
-
-The core challenge is understanding **actions over time**, rather than recognizing a single frame.
-
-Our initial strategy is divided into two main components.
-
-### 1. Person Detection & Tracking
-
-First, we detect all people appearing in the video.
-
-Each detected person receives an ID:
-
-```text
-Frame 1       Frame 2       Frame 3       Frame 4
-
-Person A      Person A      Person A      Person A
-   ID: 01         ↓             ↓             ↓
-
-Person B      Person B      Person B      Person B
-   ID: 02         ↓             ↓             ↓
-```
-
-The system then follows each person throughout the video so that their movements can be evaluated independently.
-
-### 2. Sequence Verification
-
-For each participant, we analyze their actions chronologically.
-
-Given an expected sequence:
-
-```text
-A → B → C → D
-```
-
-we want to determine whether the participant actually performed:
-
-```text
-A → B → C → D     ✅
-```
-
-rather than:
-
-```text
-A → C → B → D     ❌
-```
+👏 → 🙆 → 👇 → 👏 ✅
 
 or:
 
-```text
-A → B → D        ❌
-```
+👏 → 👇 → 🙆 → 👏 ❌
 
-The important aspect is therefore **temporal understanding**: not just *what movement happened*, but **when it happened and in which order**.
-
----
-
-# 🎁 Bonus Features
-
-If the MVP is completed, we would like to extend the game with additional features.
-
-### 📷 Real-Time Gameplay
-
-Move from uploaded videos to a **live camera experience**, allowing players to play the game in real time.
-
-### 📈 Difficulty Levels
-
-Introduce different difficulty levels based on:
-
-* Number of movements
-* Time available
-* Sequence complexity
-
-For example:
-
-```text
-Easy       👏 → 🙆
-
-Medium     👏 → 🙆 → 👇 → 👏
-
-Hard       👏 → 🙆 → 👇 → 🤸 → 👏 → 🙆
-```
-
-### 🎨 Visual Representation
-
-Display a drawing or animation representing the required movement.
-
-### ✋ Raise Hand to Participate
-
-Automatically detect when someone raises their hand to indicate that they want to participate.
-
-### 🏆 Keep the Top 80%
-
-Maintain a leaderboard and allow the best-performing participants to continue to the next round.
-
-### 🔊 Audio Instructions
-
-Provide spoken instructions alongside the visual instructions.
-
-### 🔔 Synchronization Beeps
-
-Use audio cues or beeps to synchronize participants and make the game easier to follow.
+**5. Rank**
+The app shows success/failure and updates the leaderboard.
 
 ---
 
-# 🏗️ High-Level Architecture
+## 🧠 What the AI Does
+
+The key challenge is not simply detecting a person or a movement.
+
+The AI needs to understand **actions over time**:
+
+**Video → Player Detection → Tracking → Action Recognition → Sequence Matching → Result**
+
+For every player, the system checks:
+
+* Did they perform the correct movements?
+* Were they performed in the correct order?
+* Were they completed within the allowed time?
+
+---
+
+## 🚀 Hackathon MVP
+
+Our goal is a working end-to-end local web app with:
+
+* 📹 Video upload
+* 🎯 Movement sequence display
+* 👤 Multi-person detection & tracking
+* 🕺 Movement recognition
+* 🔢 Sequence verification
+* ⏱️ 5-second challenge timer
+* ✅ Success / failure results
+* 🏆 Player leaderboard
+* 💾 Local data storage
+
+### MVP Flow
+
+**Challenge → Perform → Record → Analyze → Verify → Score → Leaderboard**
+
+---
+
+## 🏗️ Architecture
 
 ```text
-                  ┌─────────────────────┐
-                  │   Web Interface     │
-                  │                     │
-                  │ Instructions        │
-                  │ Video Upload        │
-                  │ Results / Ranking   │
-                  └──────────┬──────────┘
-                             │
-                             ▼
-                  ┌─────────────────────┐
-                  │    Video Pipeline   │
-                  └──────────┬──────────┘
-                             │
-                             ▼
-                  ┌─────────────────────┐
-                  │ Person Detection &  │
-                  │       Tracking      │
-                  └──────────┬──────────┘
-                             │
-                             ▼
-                  ┌─────────────────────┐
-                  │ Movement / Action   │
-                  │     Detection       │
-                  └──────────┬──────────┘
-                             │
-                             ▼
-                  ┌─────────────────────┐
-                  │ Sequence Verification│
-                  │                     │
-                  │ Correct movement?   │
-                  │ Correct order?      │
-                  │ Correct timing?     │
-                  └──────────┬──────────┘
-                             │
-                             ▼
-                  ┌─────────────────────┐
-                  │       Results       │
-                  │                     │
-                  │  ✅ Success         │
-                  │  ❌ Failure         │
-                  │  🏆 Ranking         │
-                  └─────────────────────┘
+┌─────────────────────┐
+│      Web App        │
+│ Challenge + Video   │
+└──────────┬──────────┘
+           ↓
+┌─────────────────────┐
+│   Video Analysis    │
+└──────────┬──────────┘
+           ↓
+┌─────────────────────┐
+│ Person Detection &  │
+│      Tracking       │
+└──────────┬──────────┘
+           ↓
+┌─────────────────────┐
+│ Action Recognition  │
+└──────────┬──────────┘
+           ↓
+┌─────────────────────┐
+│ Sequence Validation │
+└──────────┬──────────┘
+           ↓
+┌─────────────────────┐
+│ Results + Ranking   │
+└─────────────────────┘
 ```
 
 ---
 
-# 🎯 Hackathon Challenge Alignment
+## 🏆 Why It Fits the Hackathon
 
-Our project directly addresses the **Visual Compliance Inspector** challenge.
+The project turns the **Visual Compliance Inspector** challenge into a game.
 
-The original challenge asks whether AI can watch a video and determine if a procedure was followed correctly.
+Instead of asking:
 
-Our game applies the same concept to a playful setting:
+> “Did a worker correctly follow this procedure?”
 
-> **Instead of checking whether a worker followed a maintenance procedure, we check whether a player followed a sequence of movements.**
+we ask:
 
-Both problems require the system to:
+> **“Did this player correctly follow this movement sequence?”**
 
-* Detect people
-* Track individuals over time
-* Recognize actions
-* Understand temporal sequences
-* Compare observed actions against expected actions
-* Identify missing or incorrect steps
-* Produce a final compliance result
-
-This makes the game a **gamified visual compliance inspector**.
+The underlying AI problem is the same: detect people, recognize actions, understand their order, and compare what happened against an expected procedure.
 
 ---
 
-# 🔬 Why This Is Interesting
+## ✨ If We Have Time
 
-Traditional computer vision can answer questions such as:
+After the MVP:
 
-> "Is there a person in this image?"
-
-Our project aims to answer a more complex question:
-
-> **"Did this particular person perform the correct sequence of actions within the required time?"**
-
-This introduces several interesting AI challenges:
-
-* **Multi-person tracking**
-* **Action recognition**
-* **Temporal reasoning**
-* **Sequence matching**
-* **Identity persistence**
-* **Real-time video analysis**
-
-The same underlying technology could eventually be applied beyond games — for example to **sports training, industrial procedures, education, rehabilitation, or workplace safety**.
+* 📷 Live camera gameplay
+* 📈 Difficulty levels
+* 🔊 Audio instructions and synchronization
+* ✋ Raise-hand player registration
+* 🏆 Tournament rounds / top 80% qualification
+* ⚡ Real-time movement validation
 
 ---
 
-# 🗺️ Roadmap
+## 🔭 Beyond the Hackathon
 
-### Phase 1 — MVP
+The same technology could be applied to **sports training, industrial procedures, education, rehabilitation, and workplace safety**.
 
-* [ ] Local web interface
-* [ ] Display movement instructions
-* [ ] Upload video
-* [ ] Detect people
-* [ ] Assign persistent IDs
-* [ ] Track participants
-* [ ] Detect movements
-* [ ] Validate movement sequence
-* [ ] Apply 5-second time limit
-* [ ] Display success/failure
-* [ ] Generate ranking
-* [ ] Store data locally
+### The Vision
 
-### Phase 2 — Gameplay Improvements
-
-* [ ] Difficulty levels
-* [ ] Audio instructions
-* [ ] Synchronization sounds
-* [ ] Visual movement illustrations
-* [ ] "Raise hand to participate"
-* [ ] Top 80% qualification system
-
-### Phase 3 — Real-Time
-
-* [ ] Live camera input
-* [ ] Real-time person tracking
-* [ ] Real-time movement detection
-* [ ] Real-time sequence validation
-* [ ] Live leaderboard
-
----
-
-# 🎮 Vision
-
-Our long-term vision is to turn computer vision into a **game master**.
-
-The system should be able to look at a group of people, understand what each person is doing, determine whether they followed the rules, and automatically decide who wins.
+Turn computer vision into an **AI game master** that can watch multiple people, understand what they are doing, check whether they followed the rules, and automatically determine the winner.
 
 **Watch. Move. Get recognized. Climb the leaderboard. 🏆**
-
----
-
-## 🏁 Hackathon Goal
-
-By the end of the hackathon, we aim to have a working local prototype demonstrating the complete loop:
-
-```text
-Instruction
-     ↓
-Player performs movements
-     ↓
-Video analysis
-     ↓
-Person detection & tracking
-     ↓
-Action recognition
-     ↓
-Sequence verification
-     ↓
-Success / Failure
-     ↓
-Leaderboard
-```
-
-**The goal is not just to recognize movement — it is to understand the movement sequence and determine whether the player followed the instructions.**
