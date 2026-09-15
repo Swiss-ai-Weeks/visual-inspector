@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Video + Text Processor</h1>
+<p class="subtitle">Upload a video, add a prompt, get a text result.</p>
+
+<form method="POST" enctype="multipart/form-data" id="form">
+  <label for="video">Video file</label>
+  <input type="file" id="video" name="video" accept="video/*" required>
+
+  <label for="user_text">Your text</label>
+  <textarea id="user_text" name="user_text" rows="5"
+            placeholder="Describe what you want to do with the video..."
+            required>{{ submitted_text }}</textarea>
+
+  <button type="submit" id="submit-btn">Process</button>
+  <span class="spinner" id="spinner" hidden>Processing…</span>
+</form>
+
+{% if result %}
+<section class="result">
+  <h2>Result</h2>
+  <pre>{{ result }}</pre>
+</section>
+{% endif %}
+
+<script>
+  document.getElementById('form').addEventListener('submit', () => {
+    document.getElementById('submit-btn').disabled = true;
+    document.getElementById('spinner').hidden = false;
+  });
+</script>
+{% endblock %}
