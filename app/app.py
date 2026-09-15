@@ -17,22 +17,31 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 ALLOWED_EXT = {"mp4", "mov", "avi", "mkv", "webm"}
 MAX_MB = 50
 
+# ACTIONS = [
+#     "raise your hands to the sky",
+#     "do the ninja",
+#     "scratch your scalp like a monkey",
+#     "rub your stomach",
+#     "hide your eyes",
+#     "turn around",
+# ]
+
+# ACTION_EMOJIS = {
+#     "raise your hands to the sky": "🙌",
+#     "do the ninja": "🥷",
+#     "scratch your scalp like a monkey": "🐒",
+#     "rub your stomach": "🫃",
+#     "hide your eyes": "🙈",
+#     "turn around": "🔄",
+# }
+
+
 ACTIONS = [
-    "raise your hands to the sky",
-    "do the ninja",
-    "scratch your scalp like a monkey",
-    "rub your stomach",
-    "hide your eyes",
-    "turn around",
+    "raise your hand",
 ]
 
 ACTION_EMOJIS = {
-    "raise your hands to the sky": "🙌",
-    "do the ninja": "🥷",
-    "scratch your scalp like a monkey": "🐒",
-    "rub your stomach": "🫃",
-    "hide your eyes": "🙈",
-    "turn around": "🔄",
+    "raise your hand": "🙌",
 }
 
 app = Flask(__name__)
