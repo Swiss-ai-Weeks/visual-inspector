@@ -12,16 +12,45 @@
   <form method="POST" enctype="multipart/form-data" id="form">
     <input type="hidden" name="action" value="{{ action }}">
 
-    <p class="upload-section-label">Upload the video</p>
-    <div class="upload-zone" id="upload-zone">
-      <input type="file" id="video" name="video" accept="video/*" required>
-      <span class="upload-icon" id="upload-icon">🎬</span>
-      <p class="upload-primary" id="upload-primary">Drop your video here</p>
-      <p class="upload-hint">or click to browse &middot; MP4, MOV, AVI, MKV, WEBM &middot; max 50 MB</p>
-      <p class="upload-filename" id="upload-filename"></p>
+    <!-- Mode toggle -->
+    <div class="mode-toggle">
+      <button type="button" class="mode-btn active" id="btn-upload" onclick="setMode('upload')">
+        🎬 Upload file
+      </button>
+      <button type="button" class="mode-btn" id="btn-record" onclick="setMode('record')">
+        📷 Use camera
+      </button>
     </div>
 
-    <button type="submit" class="submit-btn" id="submit-btn">Analyze Video</button>
+    <!-- Upload mode -->
+    <div id="upload-section">
+      <div class="upload-zone" id="upload-zone">
+        <input type="file" id="video" name="video" accept="video/*">
+        <span class="upload-icon" id="upload-icon">🎬</span>
+        <p class="upload-primary" id="upload-primary">Drop your video here</p>
+        <p class="upload-hint">or click to browse &middot; MP4, MOV, AVI, MKV, WEBM &middot; max 50 MB</p>
+        <p class="upload-filename" id="upload-filename"></p>
+      </div>
+      <button type="submit" class="submit-btn" id="submit-btn">Analyze Video</button>
+    </div>
+
+    <!-- Record mode -->
+    <div id="record-section" style="display:none">
+      <div class="camera-wrap">
+        <video id="preview" autoplay muted playsinline class="camera-preview"></video>
+        <div class="countdown-overlay" id="countdown-overlay">
+          <span class="countdown-num" id="countdown-num">5</span>
+        </div>
+        <div class="rec-badge" id="rec-badge">
+          <span class="rec-dot"></span> REC
+        </div>
+      </div>
+      <button type="button" class="record-btn" id="record-btn" onclick="startRecording()">
+        Start Recording
+      </button>
+      <p class="record-hint">Camera records for 5 seconds then auto-submits.</p>
+    </div>
+
   </form>
 </div>
 
@@ -44,31 +73,125 @@
 </div>
 
 <script>
-  const zone = document.getElementById('upload-zone');
-  const input = document.getElementById('video');
-  const icon = document.getElementById('upload-icon');
-  const primary = document.getElementById('upload-primary');
-  const filename = document.getElementById('upload-filename');
+/* ── Upload mode ── */
+const zone    = document.getElementById('upload-zone');
+const input   = document.getElementById('video');
+const icon    = document.getElementById('upload-icon');
+const primary = document.getElementById('upload-primary');
+const fnLabel = document.getElementById('upload-filename');
 
-  input.addEventListener('change', () => {
-    if (input.files.length) {
-      zone.classList.add('has-file');
-      icon.textContent = '✅';
-      primary.textContent = 'File ready';
-      filename.textContent = input.files[0].name;
+input.addEventListener('change', () => {
+  if (input.files.length) {
+    zone.classList.add('has-file');
+    icon.textContent    = '✅';
+    primary.textContent = 'File ready';
+    fnLabel.textContent = input.files[0].name;
+  }
+});
+
+['dragover', 'dragenter'].forEach(evt =>
+  zone.addEventListener(evt, e => { e.preventDefault(); zone.classList.add('drag-over'); })
+);
+['dragleave', 'drop'].forEach(evt =>
+  zone.addEventListener(evt, () => zone.classList.remove('drag-over'))
+);
+
+document.getElementById('form').addEventListener('submit', () => {
+  document.getElementById('submit-btn').disabled = true;
+  document.getElementById('loading').classList.add('active');
+});
+
+/* ── Mode switcher ── */
+let currentMode = 'upload';
+
+function setMode(mode) {
+  currentMode = mode;
+  document.getElementById('upload-section').style.display = mode === 'upload' ? '' : 'none';
+  document.getElementById('record-section').style.display = mode === 'record' ? '' : 'none';
+  document.getElementById('btn-upload').classList.toggle('active', mode === 'upload');
+  document.getElementById('btn-record').classList.toggle('active', mode === 'record');
+
+  // require file input only in upload mode
+  input.required = mode === 'upload';
+
+  if (mode !== 'record') stopCamera();
+}
+
+/* ── Camera / recording ── */
+let mediaRecorder = null;
+let recordedChunks = [];
+let cameraStream   = null;
+
+async function startRecording() {
+  const btn      = document.getElementById('record-btn');
+  const overlay  = document.getElementById('countdown-overlay');
+  const numEl    = document.getElementById('countdown-num');
+  const recBadge = document.getElementById('rec-badge');
+  const preview  = document.getElementById('preview');
+
+  btn.disabled = true;
+  btn.textContent = 'Starting camera…';
+
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Start Recording';
+    alert('Camera access denied: ' + err.message);
+    return;
+  }
+
+  preview.srcObject = cameraStream;
+  recordedChunks = [];
+
+  // pick best supported mime type
+  const mime = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
+    .find(t => MediaRecorder.isTypeSupported(t)) || '';
+
+  mediaRecorder = new MediaRecorder(cameraStream, mime ? { mimeType: mime } : {});
+  mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
+  mediaRecorder.onstop = submitRecording;
+
+  mediaRecorder.start();
+  overlay.classList.add('visible');
+  recBadge.classList.add('visible');
+  btn.textContent = 'Recording…';
+
+  let remaining = 5;
+  numEl.textContent = remaining;
+
+  const timer = setInterval(() => {
+    remaining--;
+    numEl.textContent = remaining;
+    if (remaining <= 0) {
+      clearInterval(timer);
+      mediaRecorder.stop();
+      overlay.classList.remove('visible');
+      recBadge.classList.remove('visible');
     }
-  });
+  }, 1000);
+}
 
-  ['dragover', 'dragenter'].forEach(evt =>
-    zone.addEventListener(evt, e => { e.preventDefault(); zone.classList.add('drag-over'); })
-  );
-  ['dragleave', 'drop'].forEach(evt =>
-    zone.addEventListener(evt, () => zone.classList.remove('drag-over'))
-  );
+function submitRecording() {
+  stopCamera();
+  const ext  = (mediaRecorder.mimeType || 'video/webm').includes('mp4') ? 'mp4' : 'webm';
+  const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'video/webm' });
+  const file = new File([blob], `recording.${ext}`, { type: blob.type });
+  const dt   = new DataTransfer();
+  dt.items.add(file);
+  input.files = dt.files;
 
-  document.getElementById('form').addEventListener('submit', () => {
-    document.getElementById('submit-btn').disabled = true;
-    document.getElementById('loading').classList.add('active');
-  });
+  document.getElementById('loading').classList.add('active');
+  document.getElementById('form').submit();
+}
+
+function stopCamera() {
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(t => t.stop());
+    cameraStream = null;
+  }
+  const preview = document.getElementById('preview');
+  if (preview) preview.srcObject = null;
+}
 </script>
 {% endblock %}
