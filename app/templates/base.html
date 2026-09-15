@@ -3,11 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Video + Text Processor{% endblock %}</title>
+  <title>{% block title %}MoveMatch{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <main class="container">
+  <div class="container">
+    <header class="app-header">
+      <span class="app-logo">MoveMatch</span>
+      <h1 class="app-title">Who moved first?</h1>
+      <p class="app-subtitle">Watch the clip &middot; AI picks the winner</p>
+    </header>
+
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
         {% for category, message in messages %}
@@ -17,6 +23,6 @@
     {% endwith %}
 
     {% block content %}{% endblock %}
-  </main>
+  </div>
 </body>
 </html>

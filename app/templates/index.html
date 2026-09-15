@@ -1,33 +1,74 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h1>Video + Text Processor</h1>
-<p class="subtitle">Upload a video, add a prompt, get a text result.</p>
 
-<form method="POST" enctype="multipart/form-data" id="form">
-  <label for="video">Video file</label>
-  <input type="file" id="video" name="video" accept="video/*" required>
+<div class="challenge-card">
+  <p class="challenge-label">Your challenge</p>
+  <span class="challenge-emoji">{{ emoji }}</span>
+  <p class="challenge-text">{{ action }}</p>
+</div>
 
-  <label for="user_text">Your text</label>
-  <textarea id="user_text" name="user_text" rows="5"
-            placeholder="Describe what you want to do with the video..."
-            required>{{ submitted_text }}</textarea>
+<div class="form-card">
+  <form method="POST" enctype="multipart/form-data" id="form">
+    <input type="hidden" name="action" value="{{ action }}">
 
-  <button type="submit" id="submit-btn">Process</button>
-  <span class="spinner" id="spinner" hidden>Processing…</span>
-</form>
+    <p class="upload-section-label">Upload the video</p>
+    <div class="upload-zone" id="upload-zone">
+      <input type="file" id="video" name="video" accept="video/*" required>
+      <span class="upload-icon" id="upload-icon">🎬</span>
+      <p class="upload-primary" id="upload-primary">Drop your video here</p>
+      <p class="upload-hint">or click to browse &middot; MP4, MOV, AVI, MKV, WEBM &middot; max 50 MB</p>
+      <p class="upload-filename" id="upload-filename"></p>
+    </div>
+
+    <button type="submit" class="submit-btn" id="submit-btn">Analyze Video</button>
+  </form>
+</div>
 
 {% if result %}
-<section class="result">
-  <h2>Result</h2>
-  <pre>{{ result }}</pre>
-</section>
+<div class="result-card">
+  <p class="result-label">First to complete the challenge</p>
+  {% if winner %}
+  <p class="result-number">{{ winner }}</p>
+  <p class="result-caption">Person #{{ winner }}</p>
+  {% endif %}
+  <div class="result-raw">{{ result }}</div>
+  <a href="/" class="play-again-btn">New Challenge</a>
+</div>
 {% endif %}
 
+<div class="loading-overlay" id="loading">
+  <div class="spinner-ring"></div>
+  <p class="loading-text">Analyzing your video&hellip;</p>
+  <p class="loading-sub">This may take up to a minute.</p>
+</div>
+
 <script>
+  const zone = document.getElementById('upload-zone');
+  const input = document.getElementById('video');
+  const icon = document.getElementById('upload-icon');
+  const primary = document.getElementById('upload-primary');
+  const filename = document.getElementById('upload-filename');
+
+  input.addEventListener('change', () => {
+    if (input.files.length) {
+      zone.classList.add('has-file');
+      icon.textContent = '✅';
+      primary.textContent = 'File ready';
+      filename.textContent = input.files[0].name;
+    }
+  });
+
+  ['dragover', 'dragenter'].forEach(evt =>
+    zone.addEventListener(evt, e => { e.preventDefault(); zone.classList.add('drag-over'); })
+  );
+  ['dragleave', 'drop'].forEach(evt =>
+    zone.addEventListener(evt, () => zone.classList.remove('drag-over'))
+  );
+
   document.getElementById('form').addEventListener('submit', () => {
     document.getElementById('submit-btn').disabled = true;
-    document.getElementById('spinner').hidden = false;
+    document.getElementById('loading').classList.add('active');
   });
 </script>
 {% endblock %}
