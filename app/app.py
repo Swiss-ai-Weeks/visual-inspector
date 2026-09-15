@@ -8,6 +8,7 @@ from pathlib import Path
 from flask import Flask, render_template, request, flash, redirect, url_for
 from werkzeug.utils import secure_filename
 
+import imageio_ffmpeg
 from process_video import query_vss_agent_video
 
 BASE_DIR = Path(__file__).parent
@@ -17,31 +18,14 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 ALLOWED_EXT = {"mp4", "mov", "avi", "mkv", "webm"}
 MAX_MB = 50
 
-# ACTIONS = [
-#     "raise your hands to the sky",
-#     "do the ninja",
-#     "scratch your scalp like a monkey",
-#     "rub your stomach",
-#     "hide your eyes",
-#     "turn around",
-# ]
-
-# ACTION_EMOJIS = {
-#     "raise your hands to the sky": "🙌",
-#     "do the ninja": "🥷",
-#     "scratch your scalp like a monkey": "🐒",
-#     "rub your stomach": "🫃",
-#     "hide your eyes": "🙈",
-#     "turn around": "🔄",
-# }
-
-
 ACTIONS = [
     "raise your hand",
+    "scratch your scalp like a monkey",
 ]
 
 ACTION_EMOJIS = {
     "raise your hand": "🙌",
+    "scratch your scalp like a monkey": "🐒",
 }
 
 app = Flask(__name__)
@@ -54,56 +38,66 @@ def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXT
 
 
+def pick_two_actions() -> tuple[str, str]:
+    if len(ACTIONS) >= 2:
+        a1, a2 = random.sample(ACTIONS, 2)
+    else:
+        a1 = a2 = ACTIONS[0]
+    return a1, a2
+
+
 def ensure_mp4(src: Path) -> Path:
-    """Return src unchanged if already MP4, otherwise transcode to MP4 via ffmpeg."""
-    if src.suffix.lower() == ".mp4":
-        return src
-    dst = src.with_suffix(".mp4")
+    """Re-encode to H.264/AAC MP4 for VST compatibility."""
+    dst = src.with_name(src.stem + "_vst.mp4")
     subprocess.run(
         [
-            "ffmpeg", "-y", "-i", str(src),
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-i", str(src),
+            "-c:v", "libx264",
+            "-profile:v", "baseline",
+            "-level", "3.1",
+            "-pix_fmt", "yuv420p",
+            "-preset", "fast",
+            "-crf", "23",
             "-c:a", "aac",
+            "-ar", "44100",
+            "-movflags", "+faststart",
             str(dst),
         ],
         check=True,
         capture_output=True,
     )
+    app.logger.info("ffmpeg OK: %s → %s", src.name, dst.name)
     return dst
+
+
+def _ctx(action1, action2, **kwargs):
+    return dict(
+        action1=action1,
+        action2=action2,
+        emoji1=ACTION_EMOJIS.get(action1, "🎯"),
+        emoji2=ACTION_EMOJIS.get(action2, "🎯"),
+        **kwargs,
+    )
 
 
 @app.route("/", methods=["GET", "POST"])
 def index():
     result = None
     winner = None
-    action = random.choice(ACTIONS)
+    action1, action2 = pick_two_actions()
 
     if request.method == "POST":
-        action = request.form.get("action", action)
+        action1 = request.form.get("action1", action1)
+        action2 = request.form.get("action2", action2)
         video = request.files.get("video")
 
         if not video or video.filename == "":
             flash("Please select a video file.", "error")
-            return render_template(
-                "index.html",
-                result=None,
-                winner=None,
-                action=action,
-                emoji=ACTION_EMOJIS.get(action, "🎬"),
-            )
+            return render_template("index.html", **_ctx(action1, action2, result=None, winner=None))
 
         if not allowed_file(video.filename):
-            flash(
-                f"Unsupported format. Allowed: {', '.join(sorted(ALLOWED_EXT))}",
-                "error",
-            )
-            return render_template(
-                "index.html",
-                result=None,
-                winner=None,
-                action=action,
-                emoji=ACTION_EMOJIS.get(action, "🎬"),
-            )
+            flash(f"Unsupported format. Allowed: {', '.join(sorted(ALLOWED_EXT))}", "error")
+            return render_template("index.html", **_ctx(action1, action2, result=None, winner=None))
 
         safe_name = secure_filename(video.filename)
         unique_name = f"{uuid.uuid4().hex}_{safe_name}"
@@ -111,8 +105,10 @@ def index():
         video.save(save_path)
 
         prompt = (
-            f"Assign a number to each person from left to right.\n"
-            f"Return the number of the person who is first to execute the following action : {action}."
+            "Assign a number to each person from left to right.\n"
+            "Return the number of the person who is first to execute BOTH of the following actions:\n"
+            f"1. {action1}\n"
+            f"2. {action2}"
         )
 
         mp4_path = save_path
@@ -129,13 +125,7 @@ def index():
             if mp4_path != save_path:
                 mp4_path.unlink(missing_ok=True)
 
-    return render_template(
-        "index.html",
-        result=result,
-        winner=winner,
-        action=action,
-        emoji=ACTION_EMOJIS.get(action, "🎬"),
-    )
+    return render_template("index.html", **_ctx(action1, action2, result=result, winner=winner))
 
 
 @app.errorhandler(413)

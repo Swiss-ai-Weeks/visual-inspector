@@ -8,6 +8,7 @@ dependencies = [
     "flask>=3.0",
     "gunicorn>=22.0",
     "requests>=2.31",
+    "imageio-ffmpeg>=0.5",
 ]
 
 [project.scripts]

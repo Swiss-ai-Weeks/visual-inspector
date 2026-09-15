@@ -2,15 +2,37 @@
 
 {% block content %}
 
-<div class="challenge-card">
-  <p class="challenge-label">Your challenge</p>
-  <span class="challenge-emoji">{{ emoji }}</span>
-  <p class="challenge-text">{{ action }}</p>
+<!-- Challenge card: two states toggled by JS -->
+<div class="challenge-card" id="challenge-card">
+  <!-- Upload mode: show both actions -->
+  <div id="challenge-normal">
+    <p class="challenge-label">Your challenge</p>
+    <div class="challenge-list">
+      <div class="challenge-row">
+        <span class="challenge-step">1</span>
+        <span class="challenge-row-emoji">{{ emoji1 }}</span>
+        <span class="challenge-row-text">{{ action1 }}</span>
+      </div>
+      <div class="challenge-connector">AND</div>
+      <div class="challenge-row">
+        <span class="challenge-step">2</span>
+        <span class="challenge-row-emoji">{{ emoji2 }}</span>
+        <span class="challenge-row-text">{{ action2 }}</span>
+      </div>
+    </div>
+  </div>
+  <!-- Camera mode: mystery -->
+  <div id="challenge-mystery" style="display:none">
+    <p class="challenge-label">Camera Challenge</p>
+    <span class="challenge-emoji" style="font-size:64px">🎲</span>
+    <p class="challenge-text">Press Start Recording to reveal!</p>
+  </div>
 </div>
 
 <div class="form-card">
   <form method="POST" enctype="multipart/form-data" id="form">
-    <input type="hidden" name="action" value="{{ action }}">
+    <input type="hidden" name="action1" id="input-action1" value="{{ action1 }}">
+    <input type="hidden" name="action2" id="input-action2" value="{{ action2 }}">
 
     <!-- Mode toggle -->
     <div class="mode-toggle">
@@ -38,17 +60,28 @@
     <div id="record-section" style="display:none">
       <div class="camera-wrap">
         <video id="preview" autoplay muted playsinline class="camera-preview"></video>
+
+        <!-- Reveal overlay (hidden until recording starts) -->
         <div class="countdown-overlay" id="countdown-overlay">
-          <span class="countdown-num" id="countdown-num">5</span>
+          <div class="overlay-actions">
+            <p class="overlay-do">DO BOTH NOW!</p>
+            <p class="overlay-action"><span class="overlay-num">1</span> <span id="overlay-action1"></span></p>
+            <p class="overlay-action"><span class="overlay-num">2</span> <span id="overlay-action2"></span></p>
+          </div>
+          <div class="overlay-timer">
+            <span class="countdown-num" id="countdown-num">5</span>
+          </div>
         </div>
+
         <div class="rec-badge" id="rec-badge">
           <span class="rec-dot"></span> REC
         </div>
       </div>
+
       <button type="button" class="record-btn" id="record-btn" onclick="startRecording()">
         Start Recording
       </button>
-      <p class="record-hint">Camera records for 5 seconds then auto-submits.</p>
+      <p class="record-hint">Actions revealed when recording starts &middot; 5 seconds &middot; auto-submits</p>
     </div>
 
   </form>
@@ -56,7 +89,7 @@
 
 {% if result %}
 <div class="result-card">
-  <p class="result-label">First to complete the challenge</p>
+  <p class="result-label">First to complete both challenges</p>
   {% if winner %}
   <p class="result-number">{{ winner }}</p>
   <p class="result-caption">Person #{{ winner }}</p>
@@ -102,18 +135,14 @@ document.getElementById('form').addEventListener('submit', () => {
 });
 
 /* ── Mode switcher ── */
-let currentMode = 'upload';
-
 function setMode(mode) {
-  currentMode = mode;
-  document.getElementById('upload-section').style.display = mode === 'upload' ? '' : 'none';
-  document.getElementById('record-section').style.display = mode === 'record' ? '' : 'none';
+  document.getElementById('upload-section').style.display  = mode === 'upload' ? '' : 'none';
+  document.getElementById('record-section').style.display  = mode === 'record' ? '' : 'none';
   document.getElementById('btn-upload').classList.toggle('active', mode === 'upload');
   document.getElementById('btn-record').classList.toggle('active', mode === 'record');
-
-  // require file input only in upload mode
+  document.getElementById('challenge-normal').style.display  = mode === 'upload' ? '' : 'none';
+  document.getElementById('challenge-mystery').style.display = mode === 'record' ? '' : 'none';
   input.required = mode === 'upload';
-
   if (mode !== 'record') stopCamera();
 }
 
@@ -141,10 +170,15 @@ async function startRecording() {
     return;
   }
 
+  // Populate action text in overlay
+  document.getElementById('overlay-action1').textContent =
+    document.getElementById('input-action1').value;
+  document.getElementById('overlay-action2').textContent =
+    document.getElementById('input-action2').value;
+
   preview.srcObject = cameraStream;
   recordedChunks = [];
 
-  // pick best supported mime type
   const mime = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
     .find(t => MediaRecorder.isTypeSupported(t)) || '';
 
@@ -174,10 +208,11 @@ async function startRecording() {
 
 function submitRecording() {
   stopCamera();
-  const ext  = (mediaRecorder.mimeType || 'video/webm').includes('mp4') ? 'mp4' : 'webm';
-  const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'video/webm' });
-  const file = new File([blob], `recording.${ext}`, { type: blob.type });
-  const dt   = new DataTransfer();
+  const mimeType = mediaRecorder.mimeType || 'video/webm';
+  const ext      = mimeType.includes('mp4') ? 'mp4' : 'webm';
+  const blob     = new Blob(recordedChunks, { type: mimeType });
+  const file     = new File([blob], `recording.${ext}`, { type: blob.type });
+  const dt       = new DataTransfer();
   dt.items.add(file);
   input.files = dt.files;
 
@@ -190,8 +225,7 @@ function stopCamera() {
     cameraStream.getTracks().forEach(t => t.stop());
     cameraStream = null;
   }
-  const preview = document.getElementById('preview');
-  if (preview) preview.srcObject = null;
+  document.getElementById('preview').srcObject = null;
 }
 </script>
 {% endblock %}
