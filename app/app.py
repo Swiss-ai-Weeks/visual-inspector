@@ -8,7 +8,6 @@ from pathlib import Path
 from flask import Flask, render_template, request, flash, redirect, url_for
 from werkzeug.utils import secure_filename
 
-import imageio_ffmpeg
 from process_video import query_vss_agent_video
 
 BASE_DIR = Path(__file__).parent
@@ -51,7 +50,7 @@ def ensure_mp4(src: Path) -> Path:
     dst = src.with_name(src.stem + "_vst.mp4")
     subprocess.run(
         [
-            imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-i", str(src),
+            "ffmpeg", "-y", "-i", str(src),
             "-c:v", "libx264",
             "-profile:v", "baseline",
             "-level", "3.1",
