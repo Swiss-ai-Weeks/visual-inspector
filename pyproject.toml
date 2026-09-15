@@ -5,4 +5,6 @@ description = "Watch the sequence. Reproduce the moves. Let AI decide who got it
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "requests",
+    "random",
 ]
