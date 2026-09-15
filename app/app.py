@@ -1,6 +1,7 @@
 import os
 import random
 import re
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -42,6 +43,24 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 
 def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXT
+
+
+def ensure_mp4(src: Path) -> Path:
+    """Return src unchanged if already MP4, otherwise transcode to MP4 via ffmpeg."""
+    if src.suffix.lower() == ".mp4":
+        return src
+    dst = src.with_suffix(".mp4")
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(src),
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:a", "aac",
+            str(dst),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return dst
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -87,8 +106,10 @@ def index():
             f"Return the number of the person who is first to execute the following action : {action}."
         )
 
+        mp4_path = save_path
         try:
-            result = query_vss_agent_video(str(save_path), prompt)
+            mp4_path = ensure_mp4(save_path)
+            result = query_vss_agent_video(str(mp4_path), prompt)
             match = re.search(r"\b(\d+)\b", result or "")
             winner = match.group(1) if match else None
         except Exception as exc:
@@ -96,6 +117,8 @@ def index():
             flash(f"Processing error: {exc}", "error")
         finally:
             save_path.unlink(missing_ok=True)
+            if mp4_path != save_path:
+                mp4_path.unlink(missing_ok=True)
 
     return render_template(
         "index.html",
