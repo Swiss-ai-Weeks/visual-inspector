@@ -8,10 +8,15 @@
 </head>
 <body>
   <div class="container">
+    <nav class="app-nav">
+      <a href="/" class="nav-link">Play</a>
+      <a href="/leaderboard" class="nav-link">Leaderboard</a>
+    </nav>
+
     <header class="app-header">
       <span class="app-logo">MoveMatch</span>
       <h1 class="app-title">Who moved first?</h1>
-      <p class="app-subtitle">Watch the clip &middot; AI picks the winner</p>
+      <p class="app-subtitle">Watch the sequence &middot; Reproduce it &middot; AI decides</p>
     </header>
 
     {% with messages = get_flashed_messages(with_categories=true) %}

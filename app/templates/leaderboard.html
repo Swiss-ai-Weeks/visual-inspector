@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Leaderboard — MoveMatch{% endblock %}
+
+{% block content %}
+<div class="lb-section">
+  <p class="result-label">Rankings</p>
+  {% if rankings %}
+  <table class="lb-table">
+    <thead>
+      <tr><th>#</th><th>Player</th><th>Wins</th></tr>
+    </thead>
+    <tbody>
+      {% for row in rankings %}
+      <tr>
+        <td class="lb-rank">
+          {% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else %}{{ loop.index }}{% endif %}
+        </td>
+        <td>{{ row.name }}</td>
+        <td class="lb-wins">{{ row.wins }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="lb-empty">No games played yet. Go play!</p>
+  {% endif %}
+</div>
+
+<div class="lb-section">
+  <p class="result-label">Recent games</p>
+  {% if recent %}
+  <div class="recent-list">
+    {% for game in recent %}
+    <div class="recent-row">
+      <span class="recent-time">{{ game.played_at[:16] | replace('T', ' ') }}</span>
+      <span class="recent-winner">
+        {% if game.winner_name %}🏆 {{ game.winner_name }}{% else %}No winner{% endif %}
+      </span>
+      <span class="recent-players">{{ game.total_players }} player{{ 's' if game.total_players != 1 }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="lb-empty">No games yet.</p>
+  {% endif %}
+</div>
+
+<a href="/" class="play-again-btn" style="display:inline-block;margin-top:24px">Play a round</a>
+{% endblock %}

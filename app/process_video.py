@@ -4,13 +4,13 @@ import json
 import mimetypes
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import requests
 
 AGENT_URL = os.environ.get("VSS_AGENT_URL", "http://127.0.0.1:8000").rstrip("/")
-UPLOAD_TIMESTAMP = os.environ.get("VSS_UPLOAD_TS", "2025-01-01T00:00:00")
 
 _CANDIDATES = ("/chat", "/v1/chat", "/generate", "/v1/generate",
                "/v1/chat/completions", "/chat/completions")
@@ -115,7 +115,12 @@ def upload_video(video_path: str) -> str:
             files={"mediaFile": (filename, handle, mime)},
             data={
                 "filename": filename,
-                "metadata": json.dumps({"timestamp": UPLOAD_TIMESTAMP}),
+                "metadata": json.dumps({
+                    "timestamp": os.environ.get(
+                        "VSS_UPLOAD_TS",
+                        datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+                    )
+                }),
             },
             timeout=(15, 900),
         )
@@ -151,18 +156,38 @@ def upload_video(video_path: str) -> str:
 # Public entry point
 # --------------------------------------------------------------------------
 
-def query_vss_agent_video(video_path: str, prompt: str) -> str:
-    """Upload a video to VSS, then ask the agent about it."""
+def query_vss_agent_video(video_path: str, actions: list[str]) -> str:
+    """Upload a video to VSS, detect per-person actions, return raw agent text.
+
+    *actions* is the vocabulary of recognisable moves (e.g. ["clap", "wave"]).
+    The prompt asks the agent to return structured JSON so the caller can do
+    deterministic sequence matching in Python.
+    """
     endpoint = discover_endpoint()
     sensor_id = upload_video(video_path)
+
+    action_list = "\n".join(f"  - {a}" for a in actions)
 
     composed = (
         f"Analyse the video with sensor_id `{sensor_id}` "
         f"(uploaded file: {Path(video_path).name}).\n\n"
-        f"User question:\n{prompt}\n\n"
-        "Use the video_understanding tool with that exact sensor_id and "
-        "omit start/end timestamps to cover the whole video. Answer only "
-        "from what is visible, and include a timestamp for each observation."
+        "Use the video_understanding tool with that exact sensor_id. "
+        "Set chunk_duration_secs=2 for fine temporal granularity.\n\n"
+        "Task:\n"
+        "1. Detect every person visible in the video. "
+        "Number them left to right (1 = leftmost).\n"
+        "2. For each person, list the actions they performed in "
+        "chronological order. Only use action names from the list below "
+        "(exactly as written):\n"
+        f"{action_list}\n\n"
+        "Return ONLY valid JSON in this exact format — no other text:\n"
+        "{\n"
+        '  "players": [\n'
+        '    {"id": 1, "actions": ["action name", "action name"]},\n'
+        '    {"id": 2, "actions": ["action name"]}\n'
+        "  ]\n"
+        "}\n\n"
+        "If a person performed none of the listed actions, use an empty list."
     )
 
     response = requests.post(
@@ -182,7 +207,7 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) != 3:
-        print("usage: python3 process_video.py <video_path> <prompt>")
+        print('usage: python3 process_video.py <video_path> \'["clap","wave"]\'')
         raise SystemExit(1)
 
-    print(query_vss_agent_video(sys.argv[1], sys.argv[2]))
+    print(query_vss_agent_video(sys.argv[1], json.loads(sys.argv[2])))

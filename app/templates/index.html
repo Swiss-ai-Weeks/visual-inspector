@@ -2,26 +2,20 @@
 
 {% block content %}
 
-<!-- Challenge card: two states toggled by JS -->
+<!-- Challenge card: shows the sequence to reproduce -->
 <div class="challenge-card" id="challenge-card">
-  <!-- Upload mode: show both actions -->
   <div id="challenge-normal">
-    <p class="challenge-label">Your challenge</p>
-    <div class="challenge-list">
-      <div class="challenge-row">
-        <span class="challenge-step">1</span>
-        <span class="challenge-row-emoji">{{ emoji1 }}</span>
-        <span class="challenge-row-text">{{ action1 }}</span>
-      </div>
-      <div class="challenge-connector">AND</div>
-      <div class="challenge-row">
-        <span class="challenge-step">2</span>
-        <span class="challenge-row-emoji">{{ emoji2 }}</span>
-        <span class="challenge-row-text">{{ action2 }}</span>
-      </div>
+    <p class="challenge-label">Your sequence</p>
+    <div class="sequence-display">
+      {% for action in sequence %}
+        {% if not loop.first %}<span class="seq-arrow">→</span>{% endif %}
+        <span class="seq-step">
+          <span class="seq-emoji">{{ emojis.get(action, '🎯') }}</span>
+          <span class="seq-name">{{ action }}</span>
+        </span>
+      {% endfor %}
     </div>
   </div>
-  <!-- Camera mode: mystery -->
   <div id="challenge-mystery" style="display:none">
     <p class="challenge-label">Camera Challenge</p>
     <span class="challenge-emoji" style="font-size:64px">🎲</span>
@@ -31,8 +25,14 @@
 
 <div class="form-card">
   <form method="POST" enctype="multipart/form-data" id="form">
-    <input type="hidden" name="action1" id="input-action1" value="{{ action1 }}">
-    <input type="hidden" name="action2" id="input-action2" value="{{ action2 }}">
+    <input type="hidden" name="sequence_json" value='{{ sequence_json }}'>
+
+    <!-- Player names (optional) -->
+    <div class="field-group">
+      <label class="field-label" for="player_names">Player names (left → right, comma-separated)</label>
+      <input type="text" id="player_names" name="player_names"
+             class="text-input" placeholder="e.g. Alice, Bob, Charlie">
+    </div>
 
     <!-- Mode toggle -->
     <div class="mode-toggle">
@@ -61,12 +61,10 @@
       <div class="camera-wrap">
         <video id="preview" autoplay muted playsinline class="camera-preview"></video>
 
-        <!-- Reveal overlay (hidden until recording starts) -->
         <div class="countdown-overlay" id="countdown-overlay">
           <div class="overlay-actions">
-            <p class="overlay-do">DO BOTH NOW!</p>
-            <p class="overlay-action"><span class="overlay-num">1</span> <span id="overlay-action1"></span></p>
-            <p class="overlay-action"><span class="overlay-num">2</span> <span id="overlay-action2"></span></p>
+            <p class="overlay-do">DO THE SEQUENCE!</p>
+            <div id="overlay-sequence"></div>
           </div>
           <div class="overlay-timer">
             <span class="countdown-num" id="countdown-num">5</span>
@@ -87,14 +85,69 @@
   </form>
 </div>
 
-{% if result %}
+{% if analyzed %}
 <div class="result-card">
-  <p class="result-label">First to complete both challenges</p>
+  <!-- Expected sequence -->
+  <p class="result-label">Expected sequence</p>
+  <div class="sequence-display compact">
+    {% for action in sequence %}
+      {% if not loop.first %}<span class="seq-arrow">→</span>{% endif %}
+      <span class="seq-step">
+        <span class="seq-emoji">{{ emojis.get(action, '🎯') }}</span>
+        <span class="seq-name">{{ action }}</span>
+      </span>
+    {% endfor %}
+  </div>
+
+  {% if players %}
+  <!-- Per-player results -->
+  <p class="result-label" style="margin-top:28px">Player results</p>
+  <div class="player-results">
+    {% for p in players %}
+    <div class="player-row {{ 'pass' if p.match else 'fail' }}">
+      <div class="player-header">
+        <span class="player-badge {{ 'pass' if p.match else 'fail' }}">
+          {{ '✅' if p.match else '❌' }}
+        </span>
+        <span class="player-name">{{ p.name }}</span>
+      </div>
+      <div class="player-actions">
+        {% for a in p.actions %}
+          {% if not loop.first %}<span class="seq-arrow small">→</span>{% endif %}
+          <span class="seq-chip">{{ emojis.get(a, '❓') }} {{ a }}</span>
+        {% endfor %}
+        {% if not p.actions %}
+          <span class="seq-chip empty">no actions detected</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
   {% if winner %}
-  <p class="result-number">{{ winner }}</p>
-  <p class="result-caption">Person #{{ winner }}</p>
+  <div class="winner-banner">
+    <span class="winner-emoji">🏆</span>
+    <span class="winner-text">{{ winner.name }} wins!</span>
+  </div>
+  {% else %}
+  <div class="no-winner-banner">
+    No one completed the correct sequence.
+  </div>
   {% endif %}
-  <div class="result-raw">{{ result }}</div>
+
+  {% else %}
+  <div class="no-winner-banner">
+    Could not parse player data from the analysis.
+  </div>
+  {% endif %}
+
+  {% if raw_response %}
+  <details class="raw-details">
+    <summary>Raw AI response</summary>
+    <div class="result-raw">{{ raw_response }}</div>
+  </details>
+  {% endif %}
+
   <a href="/" class="play-again-btn">New Challenge</a>
 </div>
 {% endif %}
@@ -106,6 +159,9 @@
 </div>
 
 <script>
+const SEQUENCE = {{ sequence_json|safe }};
+const EMOJIS   = {{ emojis|tojson|safe }};
+
 /* ── Upload mode ── */
 const zone    = document.getElementById('upload-zone');
 const input   = document.getElementById('video');
@@ -147,7 +203,7 @@ function setMode(mode) {
 }
 
 /* ── Camera / recording ── */
-let mediaRecorder = null;
+let mediaRecorder  = null;
 let recordedChunks = [];
 let cameraStream   = null;
 
@@ -157,6 +213,7 @@ async function startRecording() {
   const numEl    = document.getElementById('countdown-num');
   const recBadge = document.getElementById('rec-badge');
   const preview  = document.getElementById('preview');
+  const seqEl    = document.getElementById('overlay-sequence');
 
   btn.disabled = true;
   btn.textContent = 'Starting camera…';
@@ -170,11 +227,10 @@ async function startRecording() {
     return;
   }
 
-  // Populate action text in overlay
-  document.getElementById('overlay-action1').textContent =
-    document.getElementById('input-action1').value;
-  document.getElementById('overlay-action2').textContent =
-    document.getElementById('input-action2').value;
+  // Build overlay action list from SEQUENCE
+  seqEl.innerHTML = SEQUENCE.map((a, i) =>
+    `<p class="overlay-action"><span class="overlay-num">${i+1}</span> ${a}</p>`
+  ).join('');
 
   preview.srcObject = cameraStream;
   recordedChunks = [];
