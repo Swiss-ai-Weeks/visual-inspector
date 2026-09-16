@@ -9,9 +9,9 @@
 <body>
   <div class="container">
     <nav class="app-nav">
-      <a href="/" class="nav-link">Play</a>
-      <a href="/leaderboard" class="nav-link">Leaderboard</a>
-      <a href="/summarize" class="nav-link">Summarize</a>
+      <a href="{{ url_for('index') }}" class="nav-link">Play</a>
+      <a href="{{ url_for('leaderboard') }}" class="nav-link">Leaderboard</a>
+      <a href="{{ url_for('summarize') }}" class="nav-link">Summarize</a>
     </nav>
 
     <header class="app-header">

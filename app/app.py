@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, render_template, request, flash, redirect, url_for, g
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename
 
 from models import (
@@ -43,6 +44,7 @@ SEQUENCE_LENGTH = 3
 TIME_LIMIT = 5.0
 
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-change-me")
 app.config["UPLOAD_FOLDER"] = str(UPLOAD_DIR)
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
