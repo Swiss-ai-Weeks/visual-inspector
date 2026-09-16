@@ -10,4 +10,10 @@ export VSS_HOST_UPLOAD_DIR=/home/nvidia/Documents/app/uploads
 export VSS_AGENT_UPLOAD_DIR=/data/uploads
 export KEEP_UPLOADS=1
 
+# CV tracking metadata (RTVI-CV). Left unset, tracking.py probes the agent's
+# attribute_search route then VST. Once discovery confirms the real endpoint,
+# pin it here — "{sensor_id}" is substituted:
+# export CV_METADATA_URL=http://127.0.0.1:30000/vst/api/v1/metadata/{sensor_id}
+export VSS_VST_URL="${VSS_VST_URL:-http://127.0.0.1:30000}"
+
 exec gunicorn --timeout 1200 --graceful-timeout 60 --workers 2 --bind 127.0.0.1:5000 app:app

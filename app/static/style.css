@@ -343,6 +343,24 @@ body {
   margin-bottom: 24px;
 }
 
+.overlay-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.overlay-video {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #000;
+  margin-bottom: 24px;
+}
+
 .result-raw {
   background: var(--surface2);
   border: 1px solid var(--border);

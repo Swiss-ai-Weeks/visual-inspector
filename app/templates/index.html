@@ -94,6 +94,11 @@
   <p class="result-number">{{ winner }}</p>
   <p class="result-caption">Person #{{ winner }}</p>
   {% endif %}
+  {% if overlay_token %}
+  <p class="overlay-label">Tracked positions</p>
+  <video class="overlay-video" controls playsinline preload="metadata"
+         src="{{ url_for('overlay_video', token=overlay_token) }}"></video>
+  {% endif %}
   <div class="result-raw">{{ result }}</div>
   <a href="/" class="play-again-btn">New Challenge</a>
 </div>

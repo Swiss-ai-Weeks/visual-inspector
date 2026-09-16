@@ -1,14 +1,18 @@
 import os
 import random
 import re
-import subprocess
 import uuid
 from pathlib import Path
 
-from flask import Flask, render_template, request, flash, redirect, url_for
+from flask import (
+    Flask, abort, flash, redirect, render_template, request,
+    send_from_directory, url_for,
+)
 from werkzeug.utils import secure_filename
 
-from process_video import query_vss_agent_video
+from overlay import ensure_mp4, probe_duration, probe_video, render_overlay
+from process_video import ask_agent, delete_video, upload_video
+from tracking import TrackingUnavailable, fetch_tracks, wait_for_cv
 
 BASE_DIR = Path(__file__).parent
 UPLOAD_DIR = BASE_DIR / "uploads"
@@ -16,6 +20,9 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 ALLOWED_EXT = {"mp4", "mov", "avi", "mkv", "webm"}
 MAX_MB = 50
+
+OVERLAY_SUFFIX = "_overlay.mp4"
+KEEP_OVERLAYS = 10  # rendered overlays are served after the request, so prune by age
 
 ACTIONS = [
     "raise your hand",
@@ -45,28 +52,41 @@ def pick_two_actions() -> tuple[str, str]:
     return a1, a2
 
 
-def ensure_mp4(src: Path) -> Path:
-    """Re-encode to H.264/AAC MP4 for VST compatibility."""
-    dst = src.with_name(src.stem + "_vst.mp4")
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-i", str(src),
-            "-c:v", "libx264",
-            "-profile:v", "baseline",
-            "-level", "3.1",
-            "-pix_fmt", "yuv420p",
-            "-preset", "fast",
-            "-crf", "23",
-            "-c:a", "aac",
-            "-ar", "44100",
-            "-movflags", "+faststart",
-            str(dst),
-        ],
-        check=True,
-        capture_output=True,
+def prune_overlays() -> None:
+    """Keep only the most recent overlays; they outlive their request."""
+    renders = sorted(
+        UPLOAD_DIR.glob(f"*{OVERLAY_SUFFIX}"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
     )
-    app.logger.info("ffmpeg OK: %s → %s", src.name, dst.name)
-    return dst
+    for stale in renders[KEEP_OVERLAYS:]:
+        stale.unlink(missing_ok=True)
+
+
+def build_overlay(mp4_path: Path) -> str:
+    """Fetch this clip's CV tracks and render them over it.
+
+    Keyed by the video name rather than the sensor id: VSS records CV frames
+    under `sensorId = <uploaded filename without extension>`, not the VST UUID.
+
+    Returns the overlay's filename, used as the token in the /overlay route.
+    """
+    _, width, height = probe_video(mp4_path)
+
+    # RTVI-CV writes frames asynchronously and slower than real time. Reading
+    # early truncates the timeline, so wait for it to cover the clip first.
+    wait_for_cv(mp4_path.stem, probe_duration(mp4_path))
+
+    tracks = fetch_tracks(mp4_path.stem, (width, height))
+
+    overlay_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{OVERLAY_SUFFIX}"
+    render_overlay(mp4_path, tracks, overlay_path)
+
+    app.logger.info(
+        "overlay rendered: %d track(s) over %s", len(tracks), mp4_path.name
+    )
+    prune_overlays()
+    return overlay_path.name
 
 
 def _ctx(action1, action2, **kwargs):
@@ -83,6 +103,7 @@ def _ctx(action1, action2, **kwargs):
 def index():
     result = None
     winner = None
+    overlay_token = None
     action1, action2 = pick_two_actions()
 
     if request.method == "POST":
@@ -92,11 +113,11 @@ def index():
 
         if not video or video.filename == "":
             flash("Please select a video file.", "error")
-            return render_template("index.html", **_ctx(action1, action2, result=None, winner=None))
+            return render_template("index.html", **_ctx(action1, action2))
 
         if not allowed_file(video.filename):
             flash(f"Unsupported format. Allowed: {', '.join(sorted(ALLOWED_EXT))}", "error")
-            return render_template("index.html", **_ctx(action1, action2, result=None, winner=None))
+            return render_template("index.html", **_ctx(action1, action2))
 
         safe_name = secure_filename(video.filename)
         unique_name = f"{uuid.uuid4().hex}_{safe_name}"
@@ -111,20 +132,53 @@ def index():
         )
 
         mp4_path = save_path
+        sensor_id = None
+        cv_ready = False
         try:
             mp4_path = ensure_mp4(save_path)
-            result = query_vss_agent_video(str(mp4_path), prompt)
+            sensor_id, cv_ready = upload_video(str(mp4_path))
+            result = ask_agent(sensor_id, prompt, mp4_path.name)
             match = re.search(r"\b(\d+)\b", result or "")
             winner = match.group(1) if match else None
         except Exception as exc:
             app.logger.exception("Agent query failed")
             flash(f"Processing error: {exc}", "error")
-        finally:
+
+        # Tracking is additive: a failure here must not cost us the game result.
+        if sensor_id:
+            try:
+                if not cv_ready:
+                    raise TrackingUnavailable(
+                        "the CV pipeline did not run for this clip (/complete failed)"
+                    )
+                overlay_token = build_overlay(mp4_path)
+            except Exception as exc:
+                app.logger.exception("Tracking overlay failed")
+                flash(f"Tracking unavailable: {exc}", "error")
+
+        # Deleting the sensor also drops its CV frames from Elasticsearch, so
+        # the per-person tracking data goes with it. Opt in only — the next
+        # stage (action recognition) needs those positions to stay put.
+        if sensor_id and os.environ.get("DELETE_SENSORS"):
+            delete_video(sensor_id)
+        if not os.environ.get("KEEP_UPLOADS"):
             save_path.unlink(missing_ok=True)
             if mp4_path != save_path:
                 mp4_path.unlink(missing_ok=True)
 
-    return render_template("index.html", **_ctx(action1, action2, result=result, winner=winner))
+    return render_template(
+        "index.html",
+        **_ctx(action1, action2, result=result, winner=winner, overlay_token=overlay_token),
+    )
+
+
+@app.route("/overlay/<token>")
+def overlay_video(token: str):
+    """Serve a rendered tracking overlay."""
+    name = secure_filename(token)
+    if not name.endswith(OVERLAY_SUFFIX):
+        abort(404)
+    return send_from_directory(UPLOAD_DIR, name, mimetype="video/mp4")
 
 
 @app.errorhandler(413)

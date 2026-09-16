@@ -9,6 +9,8 @@ dependencies = [
     "gunicorn>=22.0",
     "requests>=2.31",
 ]
+# The tracking overlay needs ffmpeg + ffprobe on PATH (already required for
+# VST-compatible re-encoding). No Python imaging dependency.
 
 [project.scripts]
 movematch = "app:app"
