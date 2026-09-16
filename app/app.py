@@ -57,6 +57,13 @@ def inject_url_prefix():
         or request.script_root
         or os.environ.get("SCRIPT_NAME", "")
     ).rstrip("/")
+
+    if not prefix:
+        host = request.headers.get("X-Forwarded-Host", request.host)
+        port = request.environ.get("SERVER_PORT", "")
+        if port and ".apps." in host:
+            prefix = f"/coder/proxy/{port}"
+
     return {"url_prefix": prefix}
 
 
