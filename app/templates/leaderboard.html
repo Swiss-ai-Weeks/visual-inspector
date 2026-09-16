@@ -37,6 +37,9 @@
         {% if game.winner_name %}🏆 {{ game.winner_name }}{% else %}No winner{% endif %}
       </span>
       <span class="recent-players">{{ game.total_players }} player{{ 's' if game.total_players != 1 }}</span>
+      {% if game.adjudicated %}
+        <span class="recent-adj" title="AI Adjudicator was consulted">🧑‍⚖️</span>
+      {% endif %}
     </div>
     {% endfor %}
   </div>

@@ -2,19 +2,20 @@
 
 {% block content %}
 
-<!-- Challenge card: shows the sequence to reproduce -->
+<!-- Challenge card -->
 <div class="challenge-card" id="challenge-card">
   <div id="challenge-normal">
     <p class="challenge-label">Your sequence</p>
     <div class="sequence-display">
       {% for action in sequence %}
-        {% if not loop.first %}<span class="seq-arrow">→</span>{% endif %}
+        {% if not loop.first %}<span class="seq-arrow">&rarr;</span>{% endif %}
         <span class="seq-step">
           <span class="seq-emoji">{{ emojis.get(action, '🎯') }}</span>
-          <span class="seq-name">{{ action }}</span>
+          <span class="seq-name">{{ action | replace('_', ' ') }}</span>
         </span>
       {% endfor %}
     </div>
+    <p class="challenge-timer">{{ time_limit | int }}s time limit</p>
   </div>
   <div id="challenge-mystery" style="display:none">
     <p class="challenge-label">Camera Challenge</p>
@@ -27,11 +28,19 @@
   <form method="POST" enctype="multipart/form-data" id="form">
     <input type="hidden" name="sequence_json" value='{{ sequence_json }}'>
 
-    <!-- Player names (optional) -->
+    <!-- Player names -->
     <div class="field-group">
-      <label class="field-label" for="player_names">Player names (left → right, comma-separated)</label>
+      <label class="field-label" for="player_names">Player names (left &rarr; right, comma-separated)</label>
       <input type="text" id="player_names" name="player_names"
              class="text-input" placeholder="e.g. Alice, Bob, Charlie">
+    </div>
+
+    <!-- Lenient mode -->
+    <div class="field-group checkbox-group">
+      <label class="field-label">
+        <input type="checkbox" name="lenient" id="lenient">
+        Lenient mode (partial matching via longest common subsequence)
+      </label>
     </div>
 
     <!-- Mode toggle -->
@@ -67,7 +76,7 @@
             <div id="overlay-sequence"></div>
           </div>
           <div class="overlay-timer">
-            <span class="countdown-num" id="countdown-num">5</span>
+            <span class="countdown-num" id="countdown-num">{{ time_limit | int }}</span>
           </div>
         </div>
 
@@ -79,55 +88,82 @@
       <button type="button" class="record-btn" id="record-btn" onclick="startRecording()">
         Start Recording
       </button>
-      <p class="record-hint">Actions revealed when recording starts &middot; 5 seconds &middot; auto-submits</p>
+      <p class="record-hint">Actions revealed when recording starts &middot; {{ time_limit | int }} seconds &middot; auto-submits</p>
     </div>
 
   </form>
 </div>
 
-{% if analyzed %}
+{% if result %}
 <div class="result-card">
   <!-- Expected sequence -->
   <p class="result-label">Expected sequence</p>
   <div class="sequence-display compact">
-    {% for action in sequence %}
-      {% if not loop.first %}<span class="seq-arrow">→</span>{% endif %}
+    {% for action in result.expected %}
+      {% if not loop.first %}<span class="seq-arrow">&rarr;</span>{% endif %}
       <span class="seq-step">
         <span class="seq-emoji">{{ emojis.get(action, '🎯') }}</span>
-        <span class="seq-name">{{ action }}</span>
+        <span class="seq-name">{{ action | replace('_', ' ') }}</span>
       </span>
     {% endfor %}
   </div>
 
-  {% if players %}
+  {% if result.players %}
   <!-- Per-player results -->
   <p class="result-label" style="margin-top:28px">Player results</p>
   <div class="player-results">
-    {% for p in players %}
-    <div class="player-row {{ 'pass' if p.match else 'fail' }}">
+    {% for p in result.players %}
+    <div class="player-row {{ 'pass' if p.passed else 'fail' }}">
       <div class="player-header">
-        <span class="player-badge {{ 'pass' if p.match else 'fail' }}">
-          {{ '✅' if p.match else '❌' }}
-        </span>
+        <span class="player-badge">{{ '✅' if p.passed else '❌' }}</span>
         <span class="player-name">{{ p.name }}</span>
+        <span class="player-score">{{ '%.0f' | format(p.score * 100) }}%</span>
+        {% if not p.time_ok %}
+          <span class="player-tag timeout">TIMEOUT</span>
+        {% endif %}
       </div>
+
+      <!-- Detected sequence -->
       <div class="player-actions">
-        {% for a in p.actions %}
-          {% if not loop.first %}<span class="seq-arrow small">→</span>{% endif %}
-          <span class="seq-chip">{{ emojis.get(a, '❓') }} {{ a }}</span>
+        {% for a in p.detected_sequence %}
+          {% if not loop.first %}<span class="seq-arrow small">&rarr;</span>{% endif %}
+          <span class="seq-chip {% if a in result.expected %}match{% endif %}">
+            {{ emojis.get(a, '❓') }} {{ a | replace('_', ' ') }}
+          </span>
         {% endfor %}
-        {% if not p.actions %}
+        {% if not p.detected_sequence %}
           <span class="seq-chip empty">no actions detected</span>
         {% endif %}
       </div>
+
+      <!-- Event timeline -->
+      {% if p.events %}
+      <div class="event-timeline">
+        {% for ev in p.events %}
+        <div class="timeline-event" title="conf: {{ '%.0f' | format(ev.confidence * 100) }}%">
+          <span class="tl-time">{{ '%.1f' | format(ev.t_start) }}s</span>
+          <span class="tl-action">{{ emojis.get(ev.action, '❓') }} {{ ev.action | replace('_', ' ') }}</span>
+          <span class="tl-conf {% if ev.confidence > 0.7 %}high{% elif ev.confidence > 0.5 %}med{% else %}low{% endif %}">
+            {{ '%.0f' | format(ev.confidence * 100) }}%
+          </span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
     </div>
     {% endfor %}
   </div>
 
-  {% if winner %}
+  {% if result.adjudicated %}
+  <div class="adjudication-badge">
+    🧑‍⚖️ AI Adjudicator was consulted on uncertain detections
+  </div>
+  {% endif %}
+
+  {% if result.winner %}
   <div class="winner-banner">
     <span class="winner-emoji">🏆</span>
-    <span class="winner-text">{{ winner.name }} wins!</span>
+    <span class="winner-text">{{ result.winner.name }} wins!</span>
   </div>
   {% else %}
   <div class="no-winner-banner">
@@ -137,15 +173,8 @@
 
   {% else %}
   <div class="no-winner-banner">
-    Could not parse player data from the analysis.
+    Could not detect any players in the video.
   </div>
-  {% endif %}
-
-  {% if raw_response %}
-  <details class="raw-details">
-    <summary>Raw AI response</summary>
-    <div class="result-raw">{{ raw_response }}</div>
-  </details>
   {% endif %}
 
   <a href="/" class="play-again-btn">New Challenge</a>
@@ -155,14 +184,15 @@
 <div class="loading-overlay" id="loading">
   <div class="spinner-ring"></div>
   <p class="loading-text">Analyzing your video&hellip;</p>
-  <p class="loading-sub">This may take up to a minute.</p>
+  <p class="loading-sub">Detecting players, recognizing actions, validating sequence.</p>
 </div>
 
 <script>
-const SEQUENCE = {{ sequence_json|safe }};
-const EMOJIS   = {{ emojis|tojson|safe }};
+const SEQUENCE   = {{ sequence_json|safe }};
+const EMOJIS     = {{ emojis|tojson|safe }};
+const TIME_LIMIT = {{ time_limit|int }};
 
-/* ── Upload mode ── */
+/* -- Upload mode -- */
 const zone    = document.getElementById('upload-zone');
 const input   = document.getElementById('video');
 const icon    = document.getElementById('upload-icon');
@@ -190,7 +220,7 @@ document.getElementById('form').addEventListener('submit', () => {
   document.getElementById('loading').classList.add('active');
 });
 
-/* ── Mode switcher ── */
+/* -- Mode switcher -- */
 function setMode(mode) {
   document.getElementById('upload-section').style.display  = mode === 'upload' ? '' : 'none';
   document.getElementById('record-section').style.display  = mode === 'record' ? '' : 'none';
@@ -202,7 +232,7 @@ function setMode(mode) {
   if (mode !== 'record') stopCamera();
 }
 
-/* ── Camera / recording ── */
+/* -- Camera / recording -- */
 let mediaRecorder  = null;
 let recordedChunks = [];
 let cameraStream   = null;
@@ -216,10 +246,10 @@ async function startRecording() {
   const seqEl    = document.getElementById('overlay-sequence');
 
   btn.disabled = true;
-  btn.textContent = 'Starting camera…';
+  btn.textContent = 'Starting camera...';
 
   try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
   } catch (err) {
     btn.disabled = false;
     btn.textContent = 'Start Recording';
@@ -227,10 +257,11 @@ async function startRecording() {
     return;
   }
 
-  // Build overlay action list from SEQUENCE
-  seqEl.innerHTML = SEQUENCE.map((a, i) =>
-    `<p class="overlay-action"><span class="overlay-num">${i+1}</span> ${a}</p>`
-  ).join('');
+  seqEl.innerHTML = SEQUENCE.map((a, i) => {
+    const label = a.replace(/_/g, ' ');
+    const emoji = EMOJIS[a] || '🎯';
+    return `<p class="overlay-action"><span class="overlay-num">${i+1}</span> ${emoji} ${label}</p>`;
+  }).join('');
 
   preview.srcObject = cameraStream;
   recordedChunks = [];
@@ -245,9 +276,9 @@ async function startRecording() {
   mediaRecorder.start();
   overlay.classList.add('visible');
   recBadge.classList.add('visible');
-  btn.textContent = 'Recording…';
+  btn.textContent = 'Recording...';
 
-  let remaining = 5;
+  let remaining = TIME_LIMIT;
   numEl.textContent = remaining;
 
   const timer = setInterval(() => {
