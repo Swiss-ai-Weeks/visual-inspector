@@ -269,6 +269,70 @@ def leaderboard():
     return render_template("leaderboard.html", rankings=rankings, recent=recent)
 
 
+@app.route("/summarize", methods=["GET", "POST"])
+def summarize():
+    summary_result = None
+    error = None
+
+    if request.method == "POST":
+        from vss_client import upload_video, summarize_video, delete_video
+
+        video = request.files.get("video")
+        if not video or video.filename == "":
+            flash("Please select a video file.", "error")
+            return render_template("summarize.html", summary_result=None, error=None)
+
+        if not allowed_file(video.filename):
+            flash(f"Unsupported format. Allowed: {', '.join(sorted(ALLOWED_EXT))}", "error")
+            return render_template("summarize.html", summary_result=None, error=None)
+
+        safe_name = secure_filename(video.filename)
+        unique_name = f"{uuid.uuid4().hex}_{safe_name}"
+        save_path = UPLOAD_DIR / unique_name
+        video.save(save_path)
+        mp4_path = save_path
+
+        try:
+            mp4_path = ensure_mp4(save_path)
+
+            caption_prompt = request.form.get("caption_prompt", "Describe what is happening in this video.").strip()
+            chunk_duration = int(request.form.get("chunk_duration", 1))
+            num_frames_per_chunk = int(request.form.get("num_frames_per_chunk", 8))
+            enable_cv_metadata = request.form.get("enable_cv_metadata") == "on"
+            cv_pipeline_prompt = request.form.get("cv_pipeline_prompt", "person").strip()
+            temperature = float(request.form.get("temperature", 0.05))
+            max_tokens = int(request.form.get("max_tokens", 1024))
+            caption_summarization_prompt = request.form.get("caption_summarization_prompt", "").strip() or None
+            summary_aggregation_prompt = request.form.get("summary_aggregation_prompt", "").strip() or None
+
+            sensor_id = upload_video(str(mp4_path))
+            try:
+                summary_result = summarize_video(
+                    sensor_id,
+                    caption_prompt,
+                    chunk_duration=chunk_duration,
+                    num_frames_per_chunk=num_frames_per_chunk,
+                    enable_cv_metadata=enable_cv_metadata,
+                    cv_pipeline_prompt=cv_pipeline_prompt,
+                    temperature=temperature,
+                    caption_summarization_prompt=caption_summarization_prompt,
+                    summary_aggregation_prompt=summary_aggregation_prompt,
+                    max_tokens=max_tokens,
+                )
+            finally:
+                delete_video(sensor_id)
+
+        except Exception as exc:
+            log.exception("Summarize pipeline failed")
+            error = str(exc)
+        finally:
+            save_path.unlink(missing_ok=True)
+            if mp4_path != save_path:
+                mp4_path.unlink(missing_ok=True)
+
+    return render_template("summarize.html", summary_result=summary_result, error=error)
+
+
 @app.route("/api/sequence", methods=["POST"])
 def api_new_sequence():
     """Generate a new random sequence (for AJAX refresh)."""
