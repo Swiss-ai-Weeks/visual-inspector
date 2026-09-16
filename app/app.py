@@ -50,6 +50,16 @@ app.config["UPLOAD_FOLDER"] = str(UPLOAD_DIR)
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 
 
+@app.context_processor
+def inject_url_prefix():
+    prefix = (
+        request.headers.get("X-Forwarded-Prefix")
+        or request.script_root
+        or os.environ.get("SCRIPT_NAME", "")
+    ).rstrip("/")
+    return {"url_prefix": prefix}
+
+
 # -- Database -----------------------------------------------------------------
 
 def get_db():
