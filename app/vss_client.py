@@ -12,7 +12,7 @@ from typing import Any
 
 import requests
 
-AGENT_URL = os.environ.get("VSS_AGENT_URL", "http://127.0.0.1:8000").rstrip("/")
+AGENT_URL = os.environ.get("VSS_AGENT_URL", "http://127.0.0.1:8100").rstrip("/")
 
 _session = requests.Session()
 
