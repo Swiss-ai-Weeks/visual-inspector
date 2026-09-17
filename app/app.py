@@ -27,9 +27,8 @@ from models import (
     GameResult,
     PlayerResult,
 )
-from perception import extract_events, extract_events_via_agent
-from validator import validate, needs_adjudication
-from adjudicator import adjudicate
+from detect import extract_events
+from validator import validate
 
 log = logging.getLogger(__name__)
 
@@ -145,51 +144,25 @@ def run_pipeline(
     player_names: list[str],
     lenient: bool = False,
 ) -> GameResult:
-    """Full MoveMatch pipeline: upload -> perceive -> validate -> adjudicate."""
-    from vss_client import upload_video, delete_video
+    """MoveMatch pipeline: local pose perception -> deterministic validation."""
+    events = extract_events(video_path)
 
-    sensor_id = upload_video(video_path)
+    players = validate(events, expected, time_limit=TIME_LIMIT, lenient=lenient)
 
-    try:
-        try:
-            events = extract_events(sensor_id)
-        except Exception:
-            log.info("CV pipeline /summarize failed, falling back to agent")
-            events = extract_events_via_agent(
-                sensor_id, Path(video_path).name, expected,
-            )
+    for p in players:
+        idx = p.player_id - 1
+        if 0 <= idx < len(player_names) and player_names[idx].strip():
+            p.name = player_names[idx].strip()
 
-        adjudicated = False
-        uncertain = needs_adjudication(events)
-        if uncertain:
-            try:
-                refined = adjudicate(sensor_id, uncertain)
-                event_map = {(e.player_id, e.t_start): e for e in events}
-                for r in refined:
-                    event_map[(r.player_id, r.t_start)] = r
-                events = sorted(event_map.values(), key=lambda e: (e.player_id, e.t_start))
-                adjudicated = True
-            except Exception:
-                log.warning("Adjudicator failed, using raw events")
+    winner = next((p for p in players if p.passed), None)
 
-        players = validate(events, expected, time_limit=TIME_LIMIT, lenient=lenient)
-
-        for p in players:
-            idx = p.player_id - 1
-            if 0 <= idx < len(player_names) and player_names[idx].strip():
-                p.name = player_names[idx].strip()
-
-        winner = next((p for p in players if p.passed), None)
-
-        return GameResult(
-            expected=expected,
-            players=players,
-            winner=winner,
-            raw_events=events,
-            adjudicated=adjudicated,
-        )
-    finally:
-        delete_video(sensor_id)
+    return GameResult(
+        expected=expected,
+        players=players,
+        winner=winner,
+        raw_events=events,
+        adjudicated=False,
+    )
 
 
 # -- Routes -------------------------------------------------------------------
