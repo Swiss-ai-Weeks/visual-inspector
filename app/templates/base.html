@@ -4,14 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}MoveMatch{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="static/style.css">
 </head>
 <body>
   <div class="container">
+    <nav class="app-nav">
+      <a href="{{ url_prefix }}/" class="nav-link">Play</a>
+      <a href="{{ url_prefix }}/leaderboard" class="nav-link">Leaderboard</a>
+      <a href="{{ url_prefix }}/test" class="nav-link">Test</a>
+    </nav>
+
     <header class="app-header">
       <span class="app-logo">MoveMatch</span>
       <h1 class="app-title">Who moved first?</h1>
-      <p class="app-subtitle">Watch the clip &middot; AI picks the winner</p>
+      <p class="app-subtitle">Watch the sequence &middot; Reproduce it &middot; AI decides</p>
     </header>
 
     {% with messages = get_flashed_messages(with_categories=true) %}

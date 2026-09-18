@@ -1,6 +1,6 @@
 [project]
 name = "MoveMatch"
-version = "0.1.0"
+version = "0.2.0"
 description = "Watch the sequence. Reproduce the moves. Let AI decide who got it right."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -8,6 +8,8 @@ dependencies = [
     "flask>=3.0",
     "gunicorn>=22.0",
     "requests>=2.31",
+    "opencv-python>=4.9",
+    "numpy>=1.26",
 ]
 
 [project.scripts]

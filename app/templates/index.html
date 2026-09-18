@@ -2,26 +2,21 @@
 
 {% block content %}
 
-<!-- Challenge card: two states toggled by JS -->
+<!-- Challenge card -->
 <div class="challenge-card" id="challenge-card">
-  <!-- Upload mode: show both actions -->
   <div id="challenge-normal">
-    <p class="challenge-label">Your challenge</p>
-    <div class="challenge-list">
-      <div class="challenge-row">
-        <span class="challenge-step">1</span>
-        <span class="challenge-row-emoji">{{ emoji1 }}</span>
-        <span class="challenge-row-text">{{ action1 }}</span>
-      </div>
-      <div class="challenge-connector">AND</div>
-      <div class="challenge-row">
-        <span class="challenge-step">2</span>
-        <span class="challenge-row-emoji">{{ emoji2 }}</span>
-        <span class="challenge-row-text">{{ action2 }}</span>
-      </div>
+    <p class="challenge-label">Your challenge &mdash; who does it first?</p>
+    <div class="sequence-display">
+      {% for move in challenge %}
+        {% if not loop.first %}<span class="seq-arrow">&rarr;</span>{% endif %}
+        <span class="seq-step">
+          <span class="seq-emoji">{{ move_emoji(move) }}</span>
+          <span class="seq-name">{{ move }}</span>
+        </span>
+      {% endfor %}
     </div>
+    <button type="button" class="clear-btn" id="reroll">🎲 New challenge</button>
   </div>
-  <!-- Camera mode: mystery -->
   <div id="challenge-mystery" style="display:none">
     <p class="challenge-label">Camera Challenge</p>
     <span class="challenge-emoji" style="font-size:64px">🎲</span>
@@ -31,8 +26,14 @@
 
 <div class="form-card">
   <form method="POST" enctype="multipart/form-data" id="form">
-    <input type="hidden" name="action1" id="input-action1" value="{{ action1 }}">
-    <input type="hidden" name="action2" id="input-action2" value="{{ action2 }}">
+    <input type="hidden" name="challenge_json" id="challenge_json" value='{{ challenge_json }}'>
+
+    <!-- Player names -->
+    <div class="field-group">
+      <label class="field-label" for="player_names">Player names (left &rarr; right, comma-separated)</label>
+      <input type="text" id="player_names" name="player_names"
+             class="text-input" placeholder="e.g. Alice, Bob, Charlie">
+    </div>
 
     <!-- Mode toggle -->
     <div class="mode-toggle">
@@ -53,7 +54,7 @@
         <p class="upload-hint">or click to browse &middot; MP4, MOV, AVI, MKV, WEBM &middot; max 50 MB</p>
         <p class="upload-filename" id="upload-filename"></p>
       </div>
-      <button type="submit" class="submit-btn" id="submit-btn">Analyze Video</button>
+      <button type="submit" class="submit-btn" id="submit-btn">Find the winner</button>
     </div>
 
     <!-- Record mode -->
@@ -61,15 +62,13 @@
       <div class="camera-wrap">
         <video id="preview" autoplay muted playsinline class="camera-preview"></video>
 
-        <!-- Reveal overlay (hidden until recording starts) -->
         <div class="countdown-overlay" id="countdown-overlay">
           <div class="overlay-actions">
-            <p class="overlay-do">DO BOTH NOW!</p>
-            <p class="overlay-action"><span class="overlay-num">1</span> <span id="overlay-action1"></span></p>
-            <p class="overlay-action"><span class="overlay-num">2</span> <span id="overlay-action2"></span></p>
+            <p class="overlay-do">DO THE MOVES!</p>
+            <div id="overlay-sequence"></div>
           </div>
           <div class="overlay-timer">
-            <span class="countdown-num" id="countdown-num">5</span>
+            <span class="countdown-num" id="countdown-num">{{ record_seconds }}</span>
           </div>
         </div>
 
@@ -81,32 +80,36 @@
       <button type="button" class="record-btn" id="record-btn" onclick="startRecording()">
         Start Recording
       </button>
-      <p class="record-hint">Actions revealed when recording starts &middot; 5 seconds &middot; auto-submits</p>
+      <p class="record-hint">Moves revealed when recording starts &middot; {{ record_seconds }} seconds &middot; auto-submits</p>
     </div>
 
   </form>
 </div>
 
 {% if result %}
-<div class="result-card">
-  <p class="result-label">First to complete both challenges</p>
-  {% if winner %}
-  <p class="result-number">{{ winner }}</p>
-  <p class="result-caption">Person #{{ winner }}</p>
-  {% endif %}
-  <div class="result-raw">{{ result }}</div>
-  <a href="/" class="play-again-btn">New Challenge</a>
-</div>
+{% include "_result.html" %}
 {% endif %}
 
 <div class="loading-overlay" id="loading">
   <div class="spinner-ring"></div>
   <p class="loading-text">Analyzing your video&hellip;</p>
-  <p class="loading-sub">This may take up to a minute.</p>
+  <p class="loading-sub">Captioning with VSS &middot; reasoning over the timeline &middot; boxing the winner.</p>
 </div>
 
 <script>
-/* ── Upload mode ── */
+const CHALLENGE = {{ challenge_json|safe }};
+const RECORD_SECONDS = {{ record_seconds }};
+
+/* -- Reroll challenge -- */
+document.getElementById('reroll').addEventListener('click', async () => {
+  try {
+    const resp = await fetch('{{ url_prefix }}/api/challenge', { method: 'POST' });
+    const moves = await resp.json();
+    location.href = '{{ url_prefix }}/?_=' + Date.now();
+  } catch (e) { location.reload(); }
+});
+
+/* -- Upload mode -- */
 const zone    = document.getElementById('upload-zone');
 const input   = document.getElementById('video');
 const icon    = document.getElementById('upload-icon');
@@ -134,7 +137,7 @@ document.getElementById('form').addEventListener('submit', () => {
   document.getElementById('loading').classList.add('active');
 });
 
-/* ── Mode switcher ── */
+/* -- Mode switcher -- */
 function setMode(mode) {
   document.getElementById('upload-section').style.display  = mode === 'upload' ? '' : 'none';
   document.getElementById('record-section').style.display  = mode === 'record' ? '' : 'none';
@@ -146,8 +149,8 @@ function setMode(mode) {
   if (mode !== 'record') stopCamera();
 }
 
-/* ── Camera / recording ── */
-let mediaRecorder = null;
+/* -- Camera / recording -- */
+let mediaRecorder  = null;
 let recordedChunks = [];
 let cameraStream   = null;
 
@@ -157,12 +160,13 @@ async function startRecording() {
   const numEl    = document.getElementById('countdown-num');
   const recBadge = document.getElementById('rec-badge');
   const preview  = document.getElementById('preview');
+  const seqEl    = document.getElementById('overlay-sequence');
 
   btn.disabled = true;
-  btn.textContent = 'Starting camera…';
+  btn.textContent = 'Starting camera...';
 
   try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    cameraStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
   } catch (err) {
     btn.disabled = false;
     btn.textContent = 'Start Recording';
@@ -170,11 +174,9 @@ async function startRecording() {
     return;
   }
 
-  // Populate action text in overlay
-  document.getElementById('overlay-action1').textContent =
-    document.getElementById('input-action1').value;
-  document.getElementById('overlay-action2').textContent =
-    document.getElementById('input-action2').value;
+  seqEl.innerHTML = CHALLENGE.map((m, i) =>
+    `<p class="overlay-action"><span class="overlay-num">${i+1}</span> ${m}</p>`
+  ).join('');
 
   preview.srcObject = cameraStream;
   recordedChunks = [];
@@ -189,9 +191,9 @@ async function startRecording() {
   mediaRecorder.start();
   overlay.classList.add('visible');
   recBadge.classList.add('visible');
-  btn.textContent = 'Recording…';
+  btn.textContent = 'Recording...';
 
-  let remaining = 5;
+  let remaining = RECORD_SECONDS;
   numEl.textContent = remaining;
 
   const timer = setInterval(() => {

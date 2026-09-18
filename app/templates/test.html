@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+
+{% block title %}Test a movement — MoveMatch{% endblock %}
+
+{% block content %}
+
+<div class="form-card">
+  <h2 style="margin-top:0">Write your own movements</h2>
+  <p style="color:var(--muted);margin-bottom:1.25rem">
+    Type any movement in plain language &mdash; the VSS captioner and reasoner
+    handle arbitrary moves, not a fixed list. Add several to require them in
+    order, then drop a video to see who does them first.
+  </p>
+
+  <form method="POST" enctype="multipart/form-data" id="test-form">
+    <input type="hidden" name="moves_json" id="moves_json" value="[]">
+
+    <!-- Movement builder -->
+    <div class="field-group">
+      <label class="field-label" for="move-input">Add a movement</label>
+      <div class="custom-actions">
+        <input type="text" id="move-input" class="text-input"
+               placeholder="e.g. spin around twice, touch your toes, do a star jump">
+        <button type="button" class="submit-btn compact" id="add-move">Add</button>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <div class="seq-builder-header">
+        <span class="field-label" style="margin:0">Your movements (in order)</span>
+        <button type="button" class="clear-btn" id="clear-seq">Clear</button>
+      </div>
+      <div class="sequence-display compact" id="seq-preview">
+        <span class="seq-empty" id="seq-empty">No movements yet &mdash; type one above.</span>
+      </div>
+    </div>
+
+    <!-- Player names -->
+    <div class="field-group">
+      <label class="field-label" for="player_names">Player names (left &rarr; right, comma-separated)</label>
+      <input type="text" id="player_names" name="player_names"
+             class="text-input" placeholder="e.g. Alice, Bob, Charlie">
+    </div>
+
+    <!-- Video upload -->
+    <div class="field-group">
+      <label class="field-label" for="video">Video file</label>
+      <input type="file" id="video" name="video" accept="video/*" class="text-input" required>
+      <p class="upload-hint">MP4, MOV, AVI, MKV, WEBM &middot; max 50 MB</p>
+    </div>
+
+    <button type="submit" class="submit-btn" id="submit-btn">Determine the winner</button>
+  </form>
+</div>
+
+{% if result %}
+{% set back_href = '/test' %}
+{% set back_label = 'New Test' %}
+{% include "_result.html" %}
+{% endif %}
+
+<div class="loading-overlay" id="loading">
+  <div class="spinner-ring"></div>
+  <p class="loading-text">Analyzing your video&hellip;</p>
+  <p class="loading-sub">Captioning with VSS &middot; reasoning over the timeline &middot; boxing the winner.</p>
+</div>
+
+<script>
+let moves = {{ (result.moves if result else []) | tojson | safe }};
+
+const preview  = document.getElementById('seq-preview');
+const emptyMsg = document.getElementById('seq-empty');
+const hidden   = document.getElementById('moves_json');
+const moveInput = document.getElementById('move-input');
+
+function render() {
+  hidden.value = JSON.stringify(moves);
+  preview.querySelectorAll('.seq-step, .seq-arrow').forEach(n => n.remove());
+  emptyMsg.style.display = moves.length ? 'none' : '';
+  moves.forEach((m, i) => {
+    if (i > 0) {
+      const arrow = document.createElement('span');
+      arrow.className = 'seq-arrow';
+      arrow.innerHTML = '&rarr;';
+      preview.appendChild(arrow);
+    }
+    const step = document.createElement('span');
+    step.className = 'seq-step';
+    step.innerHTML = `<span class="seq-name">${m}</span>`;
+    step.title = 'Remove';
+    step.style.cursor = 'pointer';
+    step.addEventListener('click', () => { moves.splice(i, 1); render(); });
+    preview.appendChild(step);
+  });
+}
+
+function addMove() {
+  const v = moveInput.value.trim();
+  if (!v) return;
+  moves.push(v);
+  moveInput.value = '';
+  render();
+  moveInput.focus();
+}
+
+document.getElementById('add-move').addEventListener('click', addMove);
+moveInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); addMove(); }
+});
+document.getElementById('clear-seq').addEventListener('click', () => { moves = []; render(); });
+
+document.getElementById('test-form').addEventListener('submit', e => {
+  if (!moves.length) {
+    e.preventDefault();
+    alert('Add at least one movement.');
+    return;
+  }
+  document.getElementById('submit-btn').disabled = true;
+  document.getElementById('loading').classList.add('active');
+});
+
+render();
+</script>
+{% endblock %}
