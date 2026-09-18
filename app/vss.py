@@ -65,7 +65,7 @@ def _list_fused() -> list[tuple[int, str]]:
     run's file by recency rather than by id."""
     out = subprocess.check_output(
         ["docker", "exec", VIA_CONTAINER, "sh", "-c",
-         f'for f in {_FUSED_GLOB}; do [ -e "$f" ] && stat -c "%Y %n" "$f"; done'],
+         f'for f in {_FUSED_GLOB}; do [ -e "$f" ] && stat -c "%Y %n" "$f"; done; exit 0'],
         text=True,
     )
     rows = []

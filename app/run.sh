@@ -9,4 +9,4 @@ export VSS_LLM_URL="${VSS_LLM_URL:-http://127.0.0.1:38011}"
 export KEEP_UPLOADS="${KEEP_UPLOADS:-0}"
 
 VENV="${MOVEMATCH_VENV:-/home/nvidia/Documents/.venv}"
-exec "$VENV/bin/gunicorn" --timeout 1200 --graceful-timeout 60 --workers 2 --bind 127.0.0.1:5100 app:app
+exec "$VENV/bin/gunicorn" --timeout 1200 --graceful-timeout 60 --workers 2 --bind 127.0.0.1:5000 app:app

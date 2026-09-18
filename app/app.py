@@ -138,7 +138,14 @@ def ensure_mp4(src: Path) -> Path:
     dst = src.with_name(src.stem + "_vst.mp4")
     proc = subprocess.run(
         [
-            "ffmpeg", "-y", "-i", str(src),
+            "ffmpeg", "-y",
+            # Browser MediaRecorder WebM has streaming headers, no seek index and
+            # often no declared duration; probe generously and rebuild timestamps
+            # so ffmpeg doesn't bail at container open.
+            "-fflags", "+genpts+igndts",
+            "-probesize", "100M",
+            "-analyzeduration", "100M",
+            "-i", str(src),
             "-c:v", "libx264",
             "-profile:v", "baseline",
             "-level", "3.1",
@@ -268,6 +275,7 @@ def process_upload(moves: list[str], player_names: list[str]):
     video.save(save_path)
     mp4_path = save_path
 
+    keep = os.environ.get("KEEP_UPLOADS", "0") == "1"
     try:
         mp4_path = ensure_mp4(save_path)
         result = run_pipeline(str(mp4_path), moves, player_names)
@@ -275,9 +283,12 @@ def process_upload(moves: list[str], player_names: list[str]):
         return result, None
     except Exception as exc:
         log.exception("Pipeline failed")
+        if keep:
+            log.warning("KEEP_UPLOADS=1, preserving source for inspection: %s", save_path)
         return None, f"Processing error: {exc}"
     finally:
-        save_path.unlink(missing_ok=True)
+        if not keep:
+            save_path.unlink(missing_ok=True)
         if mp4_path != save_path:
             mp4_path.unlink(missing_ok=True)
 
