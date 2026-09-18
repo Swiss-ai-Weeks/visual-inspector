@@ -61,4 +61,5 @@ class GameResult:
 
     @property
     def has_winner(self) -> bool:
-        return bool(self.winner_number)
+        # winner is a 0-based tracker id, so "nobody" is signalled by no timestamp.
+        return self.timestamp is not None

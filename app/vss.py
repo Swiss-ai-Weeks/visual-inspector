@@ -5,7 +5,11 @@ give a timestamped, per-person timeline; a text NIM (``/v1/chat/completions`` at
 :38011) then reasons over that timeline to pick the FIRST person to perform a
 move / complete a sequence in order. This is ``caption_video`` + ``first_performer``.
 
-Winner snapshot: YOLOX person detection boxes the winner at the winning moment.
+The CV pipeline (GroundingDINO + NvDCF tracker) assigns each person a stable
+tracker ID, overlays it on the frames the VLM sees (Set-of-Marks), and writes a
+fused CV metadata JSON (id + bbox per frame). Captions refer to people by that
+tracker ID, and the winner snapshot is boxed straight from the tracker's bbox --
+no separate person detector, so box and caption number always agree.
 """
 
 from __future__ import annotations
@@ -14,11 +18,10 @@ import json
 import logging
 import os
 import re
-import urllib.request
+import subprocess
 from pathlib import Path
 
 import cv2
-import numpy as np
 import requests
 
 log = logging.getLogger(__name__)
@@ -27,29 +30,19 @@ log = logging.getLogger(__name__)
 RTVLM = os.environ.get("VSS_RTVLM_URL", "http://127.0.0.1:8100").rstrip("/")
 LLM = os.environ.get("VSS_LLM_URL", "http://127.0.0.1:38011").rstrip("/")
 
-MODEL_DIR = Path(__file__).parent.parent / "models"
-YOLOX_ONNX = os.environ.get("YOLOX_ONNX", str(MODEL_DIR / "yolox.onnx"))
-_MODEL_URLS = {
-    YOLOX_ONNX: ("https://media.githubusercontent.com/media/opencv/opencv_zoo/"
-                 "main/models/object_detection_yolox/"
-                 "object_detection_yolox_2022nov.onnx"),
-}
+# via-server container that holds the fused CV metadata JSON. Same container-copy
+# mechanism the notebook uses for the overlay video (no API, dir not mounted).
+VIA_CONTAINER = os.environ.get(
+    "VIA_CONTAINER", "local_deployment_single_gpu-via-server-1"
+)
 
 CAPTION_PROMPT = (
-    "Number each person from left to right. Write a dense caption describing "
-    "every action, pose, and dance move each person performs, always referring "
-    "to a person by their number."
+    "Each person has a number label drawn next to them. Write a dense caption "
+    "describing every action, pose, and dance move each person performs, always "
+    "referring to a person by the number shown next to them."
 )
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
-
-
-def _ensure_model(path: str) -> str:
-    if not os.path.exists(path) or os.path.getsize(path) < 1_000_000:
-        MODEL_DIR.mkdir(parents=True, exist_ok=True)
-        log.info("Downloading model %s", path)
-        urllib.request.urlretrieve(_MODEL_URLS[path], path)
-    return path
 
 
 # =============================================================================
@@ -61,12 +54,18 @@ def _first_model(url: str, path: str) -> str:
 
 
 def caption_video(path, chunk_duration: int = 2, chunk_overlap_duration: int = 1):
-    """Upload a clip and densely caption it. Returns ordered [(start, end, text)].
+    """Upload a clip and densely caption it. Returns ``(captions, request_id)``
+    where captions is ordered ``[(start, end, text)]``.
 
     chunk_duration is the game's TEMPORAL RESOLUTION: each chunk yields one
     timestamped caption. chunk_overlap_duration slides the window so a move
     straddling a chunk boundary still lands inside one caption.
     num_frames_per_chunk stays <=5 (cosmos3 caps a prompt at 5 images).
+
+    enable_cv_metadata runs the CV pipeline (GroundingDINO + NvDCF tracker) and
+    overlays stable tracking IDs onto the frames the VLM sees (Set-of-Marks), so
+    the numbering persists across chunks. request_id lets us fetch that run's
+    fused CV metadata JSON out of the container.
     """
     path = Path(path)
     with path.open("rb") as f:
@@ -77,7 +76,7 @@ def caption_video(path, chunk_duration: int = 2, chunk_overlap_duration: int = 1
             timeout=(15, 300),
         ).json()["id"]
     try:
-        chunks = requests.post(
+        resp = requests.post(
             f"{RTVLM}/generate_vlm_captions",
             json={
                 "id": file_id,
@@ -86,18 +85,21 @@ def caption_video(path, chunk_duration: int = 2, chunk_overlap_duration: int = 1
                 "chunk_duration": chunk_duration,
                 "chunk_overlap_duration": chunk_overlap_duration,
                 "num_frames_per_chunk": 5,
+                "enable_cv_metadata": True,
+                "cv_pipeline_prompt": "person",
             },
             timeout=(15, 900),
-        ).json()["chunk_responses"]
+        ).json()
     finally:
         requests.delete(f"{RTVLM}/files/{file_id}", timeout=30)
 
+    request_id = resp.get("id")
     caps = [
         (float(c["start_time"]), float(c["end_time"]),
          _THINK.sub("", c["content"]).strip())
-        for c in chunks
+        for c in resp["chunk_responses"]
     ]
-    return sorted(caps, key=lambda c: c[0])
+    return sorted(caps, key=lambda c: c[0]), request_id
 
 
 def first_performer(captions, moves):
@@ -107,7 +109,9 @@ def first_performer(captions, moves):
     to the text NIM over the whole timestamped timeline (NOT VSS RAG chat, whose
     retrieval is empty here). Returns
     ``{"winner": int, "timestamp": float|None, "num_people": int}`` where
-    ``winner == 0`` means nobody did it.
+    ``winner`` is a tracker id (0-based) and ``winner == -1`` means nobody did it
+    -- test ``timestamp is None`` rather than truthiness, since id 0 is a real
+    person.
     """
     if isinstance(moves, str):
         task = f"perform the move: '{moves}'"
@@ -117,12 +121,14 @@ def first_performer(captions, moves):
 
     timeline = "\n".join(f"[{s} - {e}] {t}" for s, e, t in captions if t)
     prompt = (
-        "You are given timestamped video captions. People are numbered "
-        "left-to-right and keep the same number across time.\n\n"
+        "You are given timestamped video captions. Each person has a fixed ID "
+        "number (shown in the captions, e.g. 'Person 0', 'Person 3') that stays "
+        "the same across time. The numbers are arbitrary tracker labels, NOT "
+        "left-to-right order.\n\n"
         f"TIMELINE:\n{timeline}\n\n"
         f"Find the FIRST person (earliest timestamp) to {task}.\n"
         "Answer with ONLY JSON, no prose:\n"
-        '{"winner": <person number, or 0 if nobody>, '
+        '{"winner": <the person\'s id number, or -1 if nobody>, '
         '"timestamp": <seconds when they finish, or null>, '
         '"num_people": <total people visible>}'
     )
@@ -145,78 +151,67 @@ def first_performer(captions, moves):
             return cast(v)
         except (TypeError, ValueError):
             return None
+
+    winner = _num(parsed.get("winner"), int)
     return {
-        "winner": _num(parsed.get("winner"), int) or 0,
+        "winner": -1 if winner is None else winner,
         "timestamp": _num(parsed.get("timestamp"), float),
         "num_people": _num(parsed.get("num_people"), int) or 0,
     }
 
 
 # =============================================================================
-# YOLOX person detection (for the winner snapshot box)
+# CV metadata -- fetch the fused tracker JSON and box the winner by tracker id
 # =============================================================================
-_YOLOX_INP = 640
-_YOLOX_STRIDES = (8, 16, 32)
-_yolox_net = None
 
+def fetch_cv_metadata(request_id: str, out_path: str | None = None) -> str:
+    """Copy this run's fused CV metadata JSON out of the via-server container.
 
-def _yolox():
-    global _yolox_net
-    if _yolox_net is None:
-        _yolox_net = cv2.dnn.readNetFromONNX(_ensure_model(YOLOX_ONNX))
-    return _yolox_net
-
-
-def _yolox_grids():
-    grids, strides = [], []
-    for s in _YOLOX_STRIDES:
-        g = _YOLOX_INP // s
-        xv, yv = np.meshgrid(np.arange(g), np.arange(g))
-        grid = np.stack((xv, yv), 2).reshape(-1, 2)
-        grids.append(grid)
-        strides.append(np.full((grid.shape[0], 1), s))
-    return np.concatenate(grids, 0), np.concatenate(strides, 0)
-
-
-_GRID, _EXP = _yolox_grids()
-
-
-def detect_people(frame, conf_th=0.35, nms_th=0.45):
-    """Detect people in a BGR frame. Returns [(x0, y0, x1, y1), ...] in pixels,
-    sorted left-to-right so index N-1 is 'person N' (the caption numbering)."""
-    h, w = frame.shape[:2]
-    r = min(_YOLOX_INP / h, _YOLOX_INP / w)
-    nh, nw = int(round(h * r)), int(round(w * r))
-    canvas = np.full((_YOLOX_INP, _YOLOX_INP, 3), 114, np.uint8)
-    canvas[:nh, :nw] = cv2.resize(frame, (nw, nh))
-
-    net = _yolox()
-    net.setInput(cv2.dnn.blobFromImage(canvas, 1.0, (_YOLOX_INP, _YOLOX_INP),
-                                       swapRB=False, crop=False))
-    out = net.forward()[0]                          # [8400, 85]
-    xy = (out[:, :2] + _GRID) * _EXP
-    wh = np.exp(out[:, 2:4]) * _EXP
-    scores = out[:, 4:5] * out[:, 5:]               # obj_conf * class_conf
-    cls = np.argmax(scores, 1)
-    conf = scores[np.arange(len(scores)), cls]
-    keep = (cls == 0) & (conf > conf_th)            # class 0 == person (COCO)
-    xy, wh, conf = xy[keep], wh[keep], conf[keep]
-    boxes = np.concatenate([xy - wh / 2, wh], 1) / r  # xywh in original pixels
-
-    idx = cv2.dnn.NMSBoxes(boxes.tolist(), conf.tolist(), conf_th, nms_th)
-    kept = [boxes[i] for i in np.array(idx).flatten()] if len(idx) else []
-    kept.sort(key=lambda b: b[0])                   # left-to-right
-    return [(int(x), int(y), int(x + bw), int(y + bh)) for x, y, bw, bh in kept]
-
-
-def winner_snapshot(video_path, timestamp, winner_number, num_people, out_path):
-    """Still frame at the winning moment with the winner boxed. Returns out_path.
-
-    Boxes the winner with a real person-detection box (YOLOX) for that frame,
-    matching person N to the Nth detection from the left. If the detector
-    doesn't find at least winner_number people, falls back to an equal-column
-    split so an image is still produced.
+    Named ``{request_id}_fused.json`` in /opt/nvidia/via inside the container.
+    Fetching by exact request_id (not "newest") is race-safe across workers.
     """
+    if not request_id:
+        raise RuntimeError("No request_id -- caption_video must run with CV enabled.")
+    out_path = out_path or f"/tmp/cv_metadata_{request_id}.json"
+    remote = f"{VIA_CONTAINER}:/opt/nvidia/via/{request_id}_fused.json"
+    subprocess.check_call(["docker", "cp", remote, out_path])
+    return out_path
+
+
+def start_order(metadata_path: str):
+    """Map each tracker id to a left-to-right rank by STARTING position.
+
+    Iterates frames in time order and records each id's bbox center x the first
+    time it appears, then ranks ids by that x. Returns ``({id: rank0}, count)``.
+    Starting position is stable even if people move/swap later in the clip.
+    """
+    meta = json.load(open(metadata_path))
+    first_x: dict[int, float] = {}
+    for fr in sorted(meta, key=lambda f: f["timestamp"]):
+        for o in fr["objects"]:
+            if o["id"] not in first_x:
+                b = o["bbox"]
+                first_x[o["id"]] = (b["lX"] + b["rX"]) / 2
+    order = sorted(first_x, key=first_x.get)
+    return {tid: i for i, tid in enumerate(order)}, len(order)
+
+
+def winner_snapshot_cv(video_path, timestamp, winner_id, metadata_path, out_path):
+    """Still frame at ``timestamp`` with the winner boxed by tracker id.
+
+    Boxes come from the fused CV metadata (id + bbox), so the box lines up with
+    the caption numbering. Picks the metadata frame nearest ``timestamp`` that
+    actually contains ``winner_id``. Returns out_path.
+    """
+    meta = json.load(open(metadata_path))
+    t_ns = float(timestamp) * 1e9
+    frames = [fr for fr in meta if any(o["id"] == winner_id for o in fr["objects"])]
+    if not frames:
+        ids = sorted({o["id"] for fr in meta for o in fr["objects"]})
+        raise RuntimeError(f"tracker id {winner_id} never appears (ids: {ids}).")
+    fr = min(frames, key=lambda f: abs(f["timestamp"] - t_ns))
+    obj = next(o for o in fr["objects"] if o["id"] == winner_id)
+
     cap = cv2.VideoCapture(str(video_path))
     if timestamp is not None:
         cap.set(cv2.CAP_PROP_POS_MSEC, float(timestamp) * 1000.0)
@@ -226,19 +221,16 @@ def winner_snapshot(video_path, timestamp, winner_number, num_people, out_path):
         raise RuntimeError(f"Could not read a frame from {video_path}")
 
     h, w = frame.shape[:2]
-    people = detect_people(frame)
-    if len(people) >= winner_number:
-        x0, y0, x1, y1 = people[winner_number - 1]
-    else:
-        col = w / max(num_people, 1)
-        x0, y0, x1, y1 = (int((winner_number - 1) * col) + 6, 6,
-                          int(winner_number * col) - 6, h - 6)
-
+    sx, sy = w / fr["frameWidth"], h / fr["frameHeight"]
+    b = obj["bbox"]
+    x0, y0 = int(b["lX"] * sx), int(b["tY"] * sy)
+    x1, y1 = int(b["rX"] * sx), int(b["bY"] * sy)
     x0, x1 = max(0, x0), min(w, x1)
     y0, y1 = max(0, y0), min(h, y1)
+
     color = (0, 215, 255)  # amber, BGR
     ts = "?" if timestamp is None else f"{timestamp}"
-    label = f"WINNER: Person {winner_number} @ {ts}s"
+    label = f"WINNER @ {ts}s"
     cv2.rectangle(frame, (x0, y0), (x1, y1), color, 4)
     label_y = y0 - 12 if y0 - 12 > 24 else min(h - 8, y1 + 32)
     cv2.putText(frame, label, (x0 + 4, label_y), cv2.FONT_HERSHEY_SIMPLEX,
@@ -255,13 +247,17 @@ def find_winner(video_path, moves, chunk_duration: int = 2,
                 chunk_overlap_duration: int = 1) -> dict:
     """Find the first person to perform ``moves`` (a str or ordered list).
 
-    Runs the VSS path: VLM captions + text-NIM reasoning over the timeline.
-    Returns a dict with keys ``winner, timestamp, num_people, method, timeline``.
+    Runs the VSS path: VLM captions (with CV tracking) + text-NIM reasoning over
+    the timeline. Returns a dict with keys
+    ``winner`` (tracker id, -1 if nobody), ``timestamp``, ``num_people``,
+    ``request_id``, ``method``, ``timeline``.
     """
     target = moves[0] if isinstance(moves, (list, tuple)) and len(moves) == 1 else moves
-    captions = caption_video(video_path, chunk_duration=chunk_duration,
-                             chunk_overlap_duration=chunk_overlap_duration)
+    captions, request_id = caption_video(
+        video_path, chunk_duration=chunk_duration,
+        chunk_overlap_duration=chunk_overlap_duration)
     res = first_performer(captions, target)
+    res["request_id"] = request_id
     res["timeline"] = captions
     res["method"] = "vss"
     return res
