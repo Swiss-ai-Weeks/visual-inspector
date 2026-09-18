@@ -29,8 +29,8 @@
     <input type="hidden" name="challenge_json" id="challenge_json" value='{{ challenge_json }}'>
     <input type="hidden" name="method" id="method" value="{{ method }}">
 
-    <!-- Detector toggle -->
-    <div class="mode-toggle method-toggle">
+    <!-- Detector toggle (hidden for demo; defaults to YOLO pose) -->
+    <div class="mode-toggle method-toggle" style="display:none">
       <button type="button" class="mode-btn {{ 'active' if method == 'yolo' }}" id="btn-yolo" onclick="setMethod('yolo')">
         🤸 YOLO pose
       </button>
@@ -39,8 +39,8 @@
       </button>
     </div>
 
-    <!-- Mode toggle -->
-    <div class="mode-toggle">
+    <!-- Mode toggle (hidden for demo; defaults to camera) -->
+    <div class="mode-toggle" style="display:none">
       <button type="button" class="mode-btn active" id="btn-record" onclick="setMode('record')">
         📷 Use camera
       </button>
@@ -126,7 +126,12 @@
 </div>
 
 <script>
-const CHALLENGE = {{ challenge_json|safe }};
+/* -- Demo mode: "Start Recording" plays a canned clip instead of the camera. -- */
+const DEMO_MODE   = true;
+const DEMO_VIDEO  = '{{ url_prefix }}/videos/stagiaires.mp4';
+const DEMO_MOVES  = ['cross your arms', 'turn around', 'touch your head'];
+
+const CHALLENGE = DEMO_MODE ? DEMO_MOVES : {{ challenge_json|safe }};
 
 /* -- Difficulty & time controls -- */
 const diffSlider = document.getElementById('difficulty');
@@ -209,6 +214,8 @@ let recordedChunks = [];
 let cameraStream   = null;
 
 async function startRecording() {
+  if (DEMO_MODE) { return startDemoRecording(); }
+
   const btn      = document.getElementById('record-btn');
   const overlay  = document.getElementById('countdown-overlay');
   const numEl    = document.getElementById('countdown-num');
@@ -260,6 +267,74 @@ async function startRecording() {
       recBadge.classList.remove('visible');
     }
   }, 1000);
+}
+
+async function startDemoRecording() {
+  const btn      = document.getElementById('record-btn');
+  const overlay  = document.getElementById('countdown-overlay');
+  const numEl    = document.getElementById('countdown-num');
+  const recBadge = document.getElementById('rec-badge');
+  const preview  = document.getElementById('preview');
+  const seqEl    = document.getElementById('overlay-sequence');
+
+  btn.disabled = true;
+  btn.textContent = 'Starting camera...';
+
+  // Lock the challenge to the demo moves so the overlay and result agree.
+  document.getElementById('challenge_json').value = JSON.stringify(DEMO_MOVES);
+  seqEl.innerHTML = DEMO_MOVES.map((m, i) =>
+    `<p class="overlay-action"><span class="overlay-num">${i+1}</span> ${m}</p>`
+  ).join('');
+
+  // Play the canned clip in the preview, dressed up as a live capture.
+  preview.srcObject = null;
+  preview.src = DEMO_VIDEO;
+  preview.muted = true;
+  preview.loop = false;
+  try {
+    await preview.play();
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Start Recording';
+    alert('Could not start demo playback: ' + err.message);
+    return;
+  }
+
+  overlay.classList.add('visible');
+  recBadge.classList.add('visible');
+  btn.textContent = 'Recording...';
+
+  const updateTimer = () => {
+    const dur = isFinite(preview.duration) ? preview.duration : currentSeconds();
+    numEl.textContent = Math.max(0, Math.ceil(dur - preview.currentTime));
+  };
+  numEl.textContent = currentSeconds();
+  preview.addEventListener('timeupdate', updateTimer);
+
+  preview.addEventListener('ended', () => {
+    overlay.classList.remove('visible');
+    recBadge.classList.remove('visible');
+    submitDemoRecording();
+  }, { once: true });
+}
+
+async function submitDemoRecording() {
+  document.getElementById('loading').classList.add('active');
+  try {
+    const resp = await fetch(DEMO_VIDEO);
+    const blob = await resp.blob();
+    const file = new File([blob], 'recording.webm', { type: blob.type || 'video/webm' });
+    const dt   = new DataTransfer();
+    dt.items.add(file);
+    input.files = dt.files;
+    document.getElementById('form').submit();
+  } catch (err) {
+    document.getElementById('loading').classList.remove('active');
+    const btn = document.getElementById('record-btn');
+    btn.disabled = false;
+    btn.textContent = 'Start Recording';
+    alert('Could not load the demo clip: ' + err.message);
+  }
 }
 
 function submitRecording() {

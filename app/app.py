@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, render_template, request, flash, redirect, url_for, g
+from flask import Flask, render_template, request, flash, redirect, url_for, g, send_from_directory
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename
 
@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+VIDEO_DIR = BASE_DIR / "videos"
 SNAPSHOT_DIR = BASE_DIR / "static" / "snapshots"
 SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = BASE_DIR / "movematch.db"
@@ -401,6 +402,11 @@ def index():
         method=method,
         result=result,
     )
+
+
+@app.route("/videos/<path:filename>")
+def videos(filename):
+    return send_from_directory(VIDEO_DIR, filename)
 
 
 @app.route("/leaderboard")
