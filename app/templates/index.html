@@ -4,7 +4,7 @@
 
 <!-- Challenge card -->
 <div class="challenge-card" id="challenge-card">
-  <div id="challenge-normal">
+  <div id="challenge-normal" style="display:none">
     <p class="challenge-label">Your challenge &mdash; who does it first?</p>
     <div class="sequence-display">
       {% for move in challenge %}
@@ -17,7 +17,7 @@
     </div>
     <button type="button" class="clear-btn" id="reroll">🎲 New challenge</button>
   </div>
-  <div id="challenge-mystery" style="display:none">
+  <div id="challenge-mystery">
     <p class="challenge-label">Camera Challenge</p>
     <span class="challenge-emoji" style="font-size:64px">🎲</span>
     <p class="challenge-text">Press Start Recording to reveal!</p>
@@ -28,6 +28,16 @@
   <form method="POST" enctype="multipart/form-data" id="form">
     <input type="hidden" name="challenge_json" id="challenge_json" value='{{ challenge_json }}'>
 
+    <!-- Mode toggle -->
+    <div class="mode-toggle">
+      <button type="button" class="mode-btn active" id="btn-record" onclick="setMode('record')">
+        📷 Use camera
+      </button>
+      <button type="button" class="mode-btn" id="btn-upload" onclick="setMode('upload')">
+        🎬 Upload file
+      </button>
+    </div>
+
     <!-- Player names -->
     <div class="field-group">
       <label class="field-label" for="player_names">Player names (left &rarr; right, comma-separated)</label>
@@ -35,18 +45,26 @@
              class="text-input" placeholder="e.g. Alice, Bob, Charlie">
     </div>
 
-    <!-- Mode toggle -->
-    <div class="mode-toggle">
-      <button type="button" class="mode-btn active" id="btn-upload" onclick="setMode('upload')">
-        🎬 Upload file
-      </button>
-      <button type="button" class="mode-btn" id="btn-record" onclick="setMode('record')">
-        📷 Use camera
-      </button>
+    <!-- Difficulty & time -->
+    <div class="field-row">
+      <div class="field-group">
+        <label class="field-label" for="difficulty">
+          Difficulty &middot; <span id="difficulty-value">{{ difficulty }}</span> moves
+        </label>
+        <input type="range" id="difficulty" name="difficulty" class="range-input"
+               min="{{ min_difficulty }}" max="{{ max_difficulty }}" step="1" value="{{ difficulty }}">
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="record_time">
+          Time &middot; <span id="time-value">{{ record_seconds }}</span>s
+        </label>
+        <input type="range" id="record_time" name="time" class="range-input"
+               min="{{ min_seconds }}" max="{{ max_seconds }}" step="1" value="{{ record_seconds }}">
+      </div>
     </div>
 
     <!-- Upload mode -->
-    <div id="upload-section">
+    <div id="upload-section" style="display:none">
       <div class="upload-zone" id="upload-zone">
         <input type="file" id="video" name="video" accept="video/*">
         <span class="upload-icon" id="upload-icon">🎬</span>
@@ -58,7 +76,7 @@
     </div>
 
     <!-- Record mode -->
-    <div id="record-section" style="display:none">
+    <div id="record-section">
       <div class="camera-wrap">
         <video id="preview" autoplay muted playsinline class="camera-preview"></video>
 
@@ -80,7 +98,7 @@
       <button type="button" class="record-btn" id="record-btn" onclick="startRecording()">
         Start Recording
       </button>
-      <p class="record-hint">Moves revealed when recording starts &middot; {{ record_seconds }} seconds &middot; auto-submits</p>
+      <p class="record-hint">Moves revealed when recording starts &middot; <span id="record-secs">{{ record_seconds }}</span> seconds &middot; auto-submits</p>
     </div>
 
   </form>
@@ -98,15 +116,32 @@
 
 <script>
 const CHALLENGE = {{ challenge_json|safe }};
-const RECORD_SECONDS = {{ record_seconds }};
+
+/* -- Difficulty & time controls -- */
+const diffSlider = document.getElementById('difficulty');
+const diffValue  = document.getElementById('difficulty-value');
+const timeSlider = document.getElementById('record_time');
+const timeValue  = document.getElementById('time-value');
+
+function currentSeconds() { return +timeSlider.value; }
+
+function reloadWith(difficulty, time) {
+  location.href = '{{ url_prefix }}/?difficulty=' + difficulty + '&time=' + time + '&_=' + Date.now();
+}
+
+diffSlider.addEventListener('input', () => { diffValue.textContent = diffSlider.value; });
+// Regenerating the challenge is server-side, so reload once the value settles.
+diffSlider.addEventListener('change', () => reloadWith(diffSlider.value, timeSlider.value));
+
+timeSlider.addEventListener('input', () => {
+  timeValue.textContent = timeSlider.value;
+  document.getElementById('record-secs').textContent    = timeSlider.value;
+  document.getElementById('countdown-num').textContent  = timeSlider.value;
+});
 
 /* -- Reroll challenge -- */
-document.getElementById('reroll').addEventListener('click', async () => {
-  try {
-    const resp = await fetch('{{ url_prefix }}/api/challenge', { method: 'POST' });
-    const moves = await resp.json();
-    location.href = '{{ url_prefix }}/?_=' + Date.now();
-  } catch (e) { location.reload(); }
+document.getElementById('reroll').addEventListener('click', () => {
+  reloadWith(diffSlider.value, timeSlider.value);
 });
 
 /* -- Upload mode -- */
@@ -143,8 +178,9 @@ function setMode(mode) {
   document.getElementById('record-section').style.display  = mode === 'record' ? '' : 'none';
   document.getElementById('btn-upload').classList.toggle('active', mode === 'upload');
   document.getElementById('btn-record').classList.toggle('active', mode === 'record');
+  document.getElementById('challenge-card').style.display    = mode === 'upload' ? '' : 'none';
   document.getElementById('challenge-normal').style.display  = mode === 'upload' ? '' : 'none';
-  document.getElementById('challenge-mystery').style.display = mode === 'record' ? '' : 'none';
+  document.getElementById('challenge-mystery').style.display = 'none';
   input.required = mode === 'upload';
   if (mode !== 'record') stopCamera();
 }
@@ -193,7 +229,7 @@ async function startRecording() {
   recBadge.classList.add('visible');
   btn.textContent = 'Recording...';
 
-  let remaining = RECORD_SECONDS;
+  let remaining = currentSeconds();
   numEl.textContent = remaining;
 
   const timer = setInterval(() => {
@@ -229,5 +265,8 @@ function stopCamera() {
   }
   document.getElementById('preview').srcObject = null;
 }
+
+/* -- Camera is the default mode; hide the challenge card on load -- */
+setMode('record');
 </script>
 {% endblock %}
