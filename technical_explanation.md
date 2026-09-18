@@ -1,166 +1,164 @@
 # MoveMatch — Technical Explanation
 
-How the app decides which player performed a required sequence of movements
-correctly, in order, and within the time limit — the "fastest person" result.
+How the notebook decides **which person, standing in a line, is the first to
+perform a given move** (or to complete an ordered sequence of moves) — and then
+produces a still image with that "winner" boxed.
 
-Everything below is **local, deterministic, and offline**: no VSS, no LLM, no
-network. The perception model (`YOLOv8n-pose` ONNX) runs on CPU via
-`cv2.dnn`. Given the same video and sequence, the app always produces the same
-winner.
+People are always numbered **left → right**: person 1 is leftmost. Every stage
+keeps this numbering, so the same "person N" means the same body throughout.
 
-## The pipeline at a glance
+We found **two independent ways** to find the winner. They answer the
+same question with different trade-offs:
 
-```
-video ──▶ ensure_mp4 ──▶ extract_events ──▶ validate ──▶ pick winner ──▶ snapshot
-          (app.py)        (detect.py)        (validator.py)  (app.py)      (detect.py)
-```
+| | Our method — VLM captions + LLM | Other option — pose geometry |
+|---|---|---|
+| Handles | *any* move, described in plain English | one hard-coded move: arms crossed |
+| Runs on | remote services over HTTP (a vision-language model + a text model) | fully local, on CPU |
+| Timing resolution | ~1–2 s (the caption chunk size) | ~0.1 s per frame |
+| Deterministic | no (model outputs vary) | yes (same video → same answer) |
 
-1. **Normalize** the upload to H.264/AAC MP4 (`ensure_mp4`, [app.py:122](app/app.py#L122)).
-2. **Perceive** — sample frames, run pose detection, track each player, and
-   classify their action over time into `ActionEvent`s (`extract_events`,
-   [detect.py:240](app/detect.py#L240)).
-3. **Validate** — for each player, check the detected action sequence against
-   the expected one, in order, under the time limit (`validate`,
-   [validator.py:18](app/validator.py#L18)).
-4. **Pick the winner** and box them in a frame (`run_pipeline`,
-   [app.py:147](app/app.py#L147); `winner_snapshot`, [detect.py:341](app/detect.py#L341)).
+Use Method A for flexibility; use Method B when you need exact, repeatable
+sub-second ordering of a near-simultaneous move.
 
-## Step 1 — Perception: from pixels to `ActionEvent`s
-
-`extract_events` ([detect.py:240](app/detect.py#L240)) is the heart of perception.
-
-**Frame sampling.** The video is walked frame by frame, but only every `dt`
-seconds is actually analyzed (`step = round(fps * dt)`, default `dt = 0.2s`, so
-~5 samples/second). This keeps the run fast (~1.5s for a 4-person clip) while
-still resolving short actions.
-
-**Pose detection.** Each sampled frame goes through `_pose`
-([detect.py:63](app/detect.py#L63)): letterbox to 640×640, run the ONNX network,
-and for every person above `PERSON_CONF` (0.5) collect the bounding-box center
-`cx`, box confidence, and the 17 COCO keypoints (nose, eyes, shoulders, elbows,
-wrists, hips, knees, ankles). Overlapping boxes are removed with NMS.
-
-**Tracking players by column.** Players are identified purely by horizontal
-position — **left → right, player 1 is leftmost**. First the app finds the
-typical player count (`num_players = mode of per-frame detection counts`), then
-computes a stable column center for each player from frames that cleanly see
-everyone ([detect.py:277](app/detect.py#L277)). In every sampled frame, each
-detected person is assigned to the nearest column center
-([detect.py:295](app/detect.py#L295)); if two people land on the same column,
-the higher-confidence detection wins. This is a deliberately simple tracker: it
-assumes players stay in their lanes and don't cross, which holds for the
-"line up and perform" game format.
-
-**Action classification.** For each player in each sampled frame, `_classify`
-([detect.py:162](app/detect.py#L162)) maps the keypoint geometry to one action
-label. It is pure geometry, normalized by shoulder width `sw` so it's
-scale-invariant:
-
-- `turn_around` — shoulders visible but face keypoints hidden (back to camera).
-- `hands_on_head` — both wrists lifted to head level, near the head.
-- `raise_one_arm` — exactly one wrist well above the shoulders.
-- `arms_crossed` — forearms roughly horizontal across the chest, hands drawn in.
-- `clap` — hands together at chest height, wrists raised above elbows (forearm V).
-- `crouch` — knees drawn up toward the hips.
-- `idle` — none of the above.
-
-User-defined **custom gestures** (Test page only) are checked *first*, so they
-override the built-ins ([detect.py:177](app/detect.py#L177)); each is a set of
-AND-ed body-part relations (e.g. "left_wrist above head").
-
-**Segmenting into events.** Per player, the frame-by-frame action stream is a
-noisy timeline like `idle, idle, clap, clap, clap, idle, crouch, ...`.
-`_segments` ([detect.py:311](app/detect.py#L311)) collapses each run of the same
-action into a single `ActionEvent` with `t_start` and `t_end`. Two filters keep
-it clean:
-
-- Runs shorter than `min_samples` (default 2 samples) are dropped as flicker.
-- `idle` runs are never emitted as events.
-
-The output is a flat list of `ActionEvent(player_id, action, confidence,
-t_start, t_end)` across all players.
-
-## Step 2 — Validation: correct sequence, correct order, in time
-
-`validate` ([validator.py:18](app/validator.py#L18)) groups events by player and
-builds a `PlayerResult` for each. Per player:
-
-1. Sort events by start time, then `_dedupe_consecutive` merges adjacent
-   same-action events, and low-confidence / `idle` events are dropped
-   ([validator.py:37](app/validator.py#L37)).
-2. `seq` = the player's ordered list of action labels.
-3. **Order check** — in strict mode, the first `len(expected)` detected actions
-   must equal the expected sequence exactly
-   (`seq[:len(expected)] == expected`, [validator.py:48](app/validator.py#L48)).
-   In `lenient` mode, it's enough that the expected actions appear *in order* as
-   a subsequence (longest-common-subsequence length equals the expected length).
-4. **Time check** — `time_ok` is true when the player's *last* event ends within
-   the limit: `evts[-1].t_end <= time_limit` (default 5s,
-   [validator.py:42](app/validator.py#L42)).
-
-A player **passes** only if `ok_order and time_ok`. Players who get the order
-right but run over time still fail; a `score` (1.0 for a clean pass, otherwise a
-partial LCS-based fraction) is recorded for everyone so near-misses are visible.
-
-## Step 3 — Where "fastest" actually comes from
-
-There are two things worth being precise about, because the phrase "fastest
-person" is doing some work here:
-
-**The time limit is a gate, not a stopwatch ranking.** The app does not compute
-"who finished the sequence in the fewest seconds and rank by that number."
-Instead, every player is measured against the same clock: performing the full
-sequence correctly *before the time limit runs out* is what it means to be
-"fast enough." Anyone whose final action lands after `time_limit` is
-disqualified on `time_ok`. So the winner is not necessarily the person with the
-smallest `t_end` — it's a person who satisfied both order and time.
-
-**Winner selection is first-passing, in player order.** The winner is:
+Both methods return the same little result dictionary:
 
 ```python
-winner = next((p for p in players if p.passed), None)   # app.py:165
+{"winner": int,      # person number, 0 == nobody did it
+ "timestamp": float, # seconds when they finish (None if nobody)
+ "num_people": int}  # total people seen
 ```
 
-`players` is ordered by `player_id`, i.e. left → right. So among all players who
-passed, the app picks the **leftmost passing player**. If you need "fastest" to
-mean strictly the smallest completion time, that logic is *not* in the code
-today — it would be a one-line change here to instead pick
-`min(passers, key=lambda p: p.events[-1].t_end)`.
+---
 
-In the common game setup (one required sequence, players racing the same clock)
-these usually coincide: typically only the player who nailed the sequence in
-time passes, and they become the winner. But with multiple passers the current
-rule is positional, not temporal — worth knowing if results ever look
-surprising.
+## Method: VLM captions + LLM reasoning
 
-## Step 4 — Presenting the winner
+This path never looks at pixels itself. It asks a vision-language model to
+*describe* the video in words, then asks a text model to *reason* over those
+words. Two functions, run in sequence.
 
-If there's a winner, `run_pipeline` ([app.py:167](app/app.py#L167)) calls
-`winner_snapshot` ([detect.py:341](app/detect.py#L341)), which re-scans the video
-for the frame where that player (by left→right rank) is most confidently
-detected, draws a green box with their name, and saves a JPEG. The full
-`GameResult` (expected sequence, every `PlayerResult`, raw events, winner,
-snapshot filename) is returned to the template and persisted to the `games`
-table in `movematch.db`.
+### 1. `caption_video` — turn the clip into a timestamped timeline
+
+1. Upload the clip to the vision service (`POST /files`).
+2. Ask it to densely caption the clip (`POST /generate_vlm_captions`),
+   split into fixed windows of `chunk_duration` seconds. Each window is
+   summarized from at most **5 sampled frames** (the model caps a prompt at 5
+   images), and each yields one timestamped caption.
+3. Delete the uploaded file, strip any `<think>…</think>` reasoning the model
+   leaked, and return the captions sorted by start time as
+   `[(start, end, text), …]`.
+
+The caption prompt is deliberately **generic** — "number each person left to
+right and describe every action, pose, and move" — so the same captions can
+later answer questions about *any* move, not a fixed list.
+
+**Why `chunk_duration` matters.** It is the timeline's temporal resolution.
+Make it too large and a brief action near the end of the clip gets
+averaged into a static "everyone standing" caption and disappears.
+
+### 2. `first_performer` — reason over the timeline
+
+1. Flatten the captions into one text block: `[start - end] caption` per line.
+2. Send **one** prompt to the text model (`POST /v1/chat/completions`,
+   `temperature = 0` for repeatability). The prompt states that people are
+   numbered left-to-right and keep their number, pastes the timeline, and asks
+   for the **earliest** person to either perform a single move or complete a
+   list of moves *in order*.
+3. The model must answer with JSON only; the function extracts the JSON and
+   returns it.
+
+`moves` can be a single string (`"cross their arms"`) or an ordered list
+(`["cross arms", "turn around", "touch your head"]`). Ordering is enforced by
+the prompt wording, not by code — the model decides whether the moves appear in
+sequence.
+
+> **Known limitation.** The captions list people in numeric order, so when two
+> people do the move in the same 1–2 s window, the model can't tell who was
+> truly first and tends to default to person 1. When exact ordering of a
+> near-simultaneous move matters, use Method B.
+
+---
+
+## Presenting the winner — `winner_snapshot`
+
+Once a method returns a winner and timestamp:
+
+1. Seek the video to that timestamp and grab the frame.
+2. Run **YOLOX** (a separate ONNX person detector, also via `cv2.dnn`) to get
+   real person bounding boxes, sorted left → right. Using a real detector avoids
+   the boxes drifting onto walls or doors, which happened when box coordinates
+   were requested from the VLM.
+3. Box the **Nth detection from the left** (the winner) with an amber rectangle
+   and a `WINNER: Person N @ ts` label, and save it as a JPEG. If the detector
+   finds fewer than N people, it falls back to an equal-width column split so an
+   image is still produced.
+
+---
+
+## Other method — deterministic "who crossed their arms first"
+
+This path uses no language model at all. It runs a pose estimator on sampled
+frames and decides "arms crossed" from geometry, giving an exact onset time per
+person.
+
+### B1. `pose_people` — 17 keypoints per person
+
+Each frame is letterboxed to 640×640 and run through **YOLOv8n-pose** (ONNX, via
+OpenCV's `cv2.dnn`, on CPU). For every detection above the confidence threshold
+it returns the 17 COCO keypoints (shoulders, wrists, hips, …) in original pixel
+coordinates. Overlapping detections are removed with non-max suppression, and
+people are sorted left → right.
+
+### B2. `arms_crossed` — the geometric test
+
+Given one person's keypoints, arms are "crossed" when **both** hold:
+
+- **Wrists pulled together.** The horizontal gap between the wrists, divided by
+  shoulder width, is small. Arms at the sides give a ratio near 1; crossed
+  wrists meet or swap over the chest, driving the ratio toward 0 or negative.
+  Dividing by shoulder width makes the test scale-invariant (independent of how
+  far the person is from the camera).
+- **Wrists at chest height, not overhead.** Both wrists must sit at or below
+  shoulder level, so a "hands up" pose (also a small gap, but raised) doesn't
+  count.
+
+Low-visibility keypoints are rejected first so the test isn't fooled by missing
+joints.
+
+### B3. `first_to_cross_arms` — time the onset per person
+
+1. Sample the video every `dt` seconds (default 0.1 s) by seeking with
+   `cv2.CAP_PROP_POS_MSEC` and running `pose_people`.
+2. Build fixed **column centers** from the frame that saw the most people; this
+   is the left-to-right reference for numbering.
+3. Assign each detection in each frame to its nearest column, and record the
+   **first** timestamp at which each person satisfies `arms_crossed`.
+4. The winner is the person with the earliest onset.
+
+Because there's no model in the timing loop, near-simultaneous crosses are
+ordered correctly and the result is fully reproducible.
+
+---
+
+## Models used
+
+Downloaded once and cached under `./models` (~50 MB total):
+
+| Model | Role |
+|-------|------|
+| **YOLOX** (`yolox.onnx`, ~34 MB) | person detection for the winner snapshot |
+| **YOLOv8n-pose** (`yolov8n-pose.onnx`, ~12 MB) | 17-keypoint pose for the deterministic arms-crossed timing |
+
+Both run through OpenCV's `cv2.dnn` module on CPU — no GPU or extra deep-learning
+framework required.
 
 ## Key parameters
 
-| Parameter | Location | Default | Effect |
-|-----------|----------|---------|--------|
-| `dt` | `extract_events` | 0.2s | Frame sampling interval (~5 fps analyzed) |
-| `min_samples` | `extract_events` | 2 | Minimum run length to emit an event (flicker filter) |
-| `PERSON_CONF` | `detect.py` | 0.5 | Minimum person-detection confidence |
-| `TIME_LIMIT` | `app.py` / `validator.py` | 5.0s | Deadline for the last action |
-| `CONFIDENCE_THRESHOLD` | `validator.py` | 0.5 | Events at/below this are ignored |
-| `SEQUENCE_LENGTH` | `app.py` | 3 | Number of actions in a generated challenge |
-| `lenient` | request form | off | Subsequence match instead of exact prefix match |
-
-## Why it's built this way
-
-The perception layer was deliberately switched from the VSS CV pipeline + LLM
-adjudication to this local pose approach because the CV pipeline stalled with
-zero detections and the VLM couldn't reliably ground *which* player did *what*
-and *when*. Local pose geometry gives correct, repeatable per-player tracking,
-action labels, and timing in about a second and a half — and, being fully
-deterministic, it makes the winner defensible: the same video always yields the
-same result.
+| Parameter | Where | Default | Effect |
+|-----------|-------|---------|--------|
+| `chunk_duration` | `caption_video` | 1 s | Caption window = Method A's time resolution |
+| `num_frames_per_chunk` | `caption_video` | 5 | Frames the VLM sees per window (hard cap 5) |
+| `temperature` | `first_performer` | 0.0 | Kept at 0 for repeatable LLM answers |
+| `dt` | `first_to_cross_arms` | 0.1 s | Frame sampling interval for pose timing |
+| `conf_th` (pose) | `pose_people` | 0.5 | Minimum pose-detection confidence |
+| `ratio_th` | `arms_crossed` | 0.55 | Wrist-gap / shoulder-width cutoff for "crossed" |
+| `conf_th` (person) | `detect_people` | 0.35 | Minimum person-detection confidence (YOLOX) |

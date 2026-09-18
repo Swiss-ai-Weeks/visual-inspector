@@ -27,26 +27,28 @@
 </div>
 
 <div class="lb-section">
-  <p class="result-label">Recent games</p>
-  {% if recent %}
-  <div class="recent-list">
-    {% for game in recent %}
-    <div class="recent-row">
-      <span class="recent-time">{{ game.played_at[:16] | replace('T', ' ') }}</span>
-      <span class="recent-winner">
-        {% if game.winner_name %}🏆 {{ game.winner_name }}{% else %}No winner{% endif %}
-      </span>
-      <span class="recent-players">{{ game.total_players }} player{{ 's' if game.total_players != 1 }}</span>
-      {% if game.adjudicated %}
-        <span class="recent-adj" title="AI Adjudicator was consulted">🧑‍⚖️</span>
-      {% endif %}
-    </div>
+  <p class="result-label">Winners</p>
+  {% if gallery %}
+  <div class="winner-gallery">
+    {% for w in gallery %}
+    <figure class="winner-card">
+      <img src="static/snapshots/{{ w.winner_image }}" alt="Winner snapshot" loading="lazy">
+      <figcaption>
+        <span class="winner-card-name">🏆 {{ w.winner_name }}</span>
+        <span class="winner-card-moves">
+          {% for move in w.moves %}{{ move_emoji(move) }} {{ move }}{% if not loop.last %} &rarr; {% endif %}{% endfor %}
+        </span>
+        <span class="winner-card-meta">
+          {{ w.played_at[:16] | replace('T', ' ') }} &middot; <span class="method-tag vss">VSS</span>
+        </span>
+      </figcaption>
+    </figure>
     {% endfor %}
   </div>
   {% else %}
-  <p class="lb-empty">No games yet.</p>
+  <p class="lb-empty">No winner snapshots yet.</p>
   {% endif %}
 </div>
 
-<a href="/" class="play-again-btn" style="display:inline-block;margin-top:24px">Play a round</a>
+<a href="{{ url_prefix }}/" class="play-again-btn" style="display:inline-block;margin-top:24px">Play a round</a>
 {% endblock %}

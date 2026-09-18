@@ -1,7 +1,9 @@
-"""Challenge Master (Agent 1) -- Flask orchestrator.
+"""MoveMatch -- Flask orchestrator.
 
-Generates sequences, triggers capture, routes through VSS perception,
-runs deterministic validation, and stores results. No LLM in this layer.
+Generates a random challenge, routes the uploaded/recorded clip through the VSS
+perception path (VLM captions + text-NIM reasoning, see vss.py), with a
+deterministic pose fallback, and stores the winner (plus a boxed snapshot) for
+the leaderboard.
 """
 
 import json
@@ -11,7 +13,6 @@ import random
 import sqlite3
 import subprocess
 import uuid
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,16 +20,8 @@ from flask import Flask, render_template, request, flash, redirect, url_for, g
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename
 
-from models import (
-    ACTION_EMOJIS,
-    ACTION_VOCAB,
-    SEQUENCE_ACTIONS,
-    ActionEvent,
-    GameResult,
-    PlayerResult,
-)
-from detect import extract_events, winner_snapshot
-from validator import validate
+from models import MOVE_POOL, GameResult, move_emoji
+from vss import find_winner, winner_snapshot
 
 log = logging.getLogger(__name__)
 
@@ -41,8 +34,10 @@ DB_PATH = BASE_DIR / "movematch.db"
 
 ALLOWED_EXT = {"mp4", "mov", "avi", "mkv", "webm"}
 MAX_MB = 50
-SEQUENCE_LENGTH = 3
-TIME_LIMIT = 5.0
+SEQUENCE_LENGTH = 2
+CHUNK_DURATION = 2
+CHUNK_OVERLAP = 1
+RECORD_SECONDS = 8
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -51,8 +46,7 @@ app.config["UPLOAD_FOLDER"] = str(UPLOAD_DIR)
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 
 
-@app.context_processor
-def inject_url_prefix():
+def current_url_prefix() -> str:
     prefix = (
         request.headers.get("X-Forwarded-Prefix")
         or request.script_root
@@ -65,7 +59,12 @@ def inject_url_prefix():
         if port and ".apps." in host:
             prefix = f"/coder/proxy/{port}"
 
-    return {"url_prefix": prefix}
+    return prefix
+
+
+@app.context_processor
+def inject_helpers():
+    return {"url_prefix": current_url_prefix(), "move_emoji": move_emoji}
 
 
 # -- Database -----------------------------------------------------------------
@@ -88,16 +87,28 @@ def init_db():
     db = sqlite3.connect(str(DB_PATH))
     db.execute("""
         CREATE TABLE IF NOT EXISTS games (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            played_at       TEXT    NOT NULL,
-            challenge       TEXT    NOT NULL,
-            winner_name     TEXT,
-            total_players   INTEGER DEFAULT 0,
-            results_json    TEXT,
-            events_json     TEXT,
-            adjudicated     INTEGER DEFAULT 0
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            played_at     TEXT    NOT NULL,
+            challenge     TEXT    NOT NULL,
+            winner_name   TEXT,
+            winner_number INTEGER DEFAULT 0,
+            num_people    INTEGER DEFAULT 0,
+            timestamp     REAL,
+            method        TEXT,
+            winner_image  TEXT
         )
     """)
+    # Migrate older databases that predate these columns.
+    cols = {r[1] for r in db.execute("PRAGMA table_info(games)")}
+    for name, ddl in [
+        ("winner_number", "INTEGER DEFAULT 0"),
+        ("num_people", "INTEGER DEFAULT 0"),
+        ("timestamp", "REAL"),
+        ("method", "TEXT"),
+        ("winner_image", "TEXT"),
+    ]:
+        if name not in cols:
+            db.execute(f"ALTER TABLE games ADD COLUMN {name} {ddl}")
     db.commit()
     db.close()
 
@@ -111,12 +122,12 @@ def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXT
 
 
-def generate_sequence() -> list[str]:
-    return random.sample(SEQUENCE_ACTIONS, min(SEQUENCE_LENGTH, len(SEQUENCE_ACTIONS)))
+def generate_challenge() -> list[str]:
+    return random.sample(MOVE_POOL, min(SEQUENCE_LENGTH, len(MOVE_POOL)))
 
 
 def ensure_mp4(src: Path) -> Path:
-    """Re-encode to H.264/AAC MP4 for VST compatibility."""
+    """Re-encode to H.264/AAC MP4 so the VSS uploader accepts it."""
     dst = src.with_name(src.stem + "_vst.mp4")
     subprocess.run(
         [
@@ -138,43 +149,98 @@ def ensure_mp4(src: Path) -> Path:
     return dst
 
 
-# -- Pipeline -----------------------------------------------------------------
+def run_pipeline(video_path: str, moves: list[str], player_names: list[str]) -> GameResult:
+    """VSS perception (pose fallback) -> winner, boxed at the winning moment."""
+    res = find_winner(video_path, moves, chunk_duration=CHUNK_DURATION,
+                      chunk_overlap_duration=CHUNK_OVERLAP)
 
-def run_pipeline(
-    video_path: str,
-    expected: list[str],
-    player_names: list[str],
-    lenient: bool = False,
-) -> GameResult:
-    """MoveMatch pipeline: local pose perception -> deterministic validation."""
-    events = extract_events(video_path)
+    winner_number = int(res.get("winner") or 0)
+    timestamp = res.get("timestamp")
+    num_people = int(res.get("num_people") or 0)
 
-    players = validate(events, expected, time_limit=TIME_LIMIT, lenient=lenient)
-
-    for p in players:
-        idx = p.player_id - 1
+    winner_name = None
+    if winner_number:
+        idx = winner_number - 1
         if 0 <= idx < len(player_names) and player_names[idx].strip():
-            p.name = player_names[idx].strip()
-
-    winner = next((p for p in players if p.passed), None)
+            winner_name = player_names[idx].strip()
+        else:
+            winner_name = f"Person {winner_number}"
 
     winner_image = None
-    if winner:
+    if winner_number:
         fname = f"{uuid.uuid4().hex}.jpg"
         try:
-            if winner_snapshot(video_path, winner.player_id, str(SNAPSHOT_DIR / fname), label=winner.name):
-                winner_image = fname
+            winner_snapshot(video_path, timestamp, winner_number, num_people,
+                            SNAPSHOT_DIR / fname)
+            winner_image = fname
         except Exception:
             log.warning("Winner snapshot failed", exc_info=True)
 
     return GameResult(
-        expected=expected,
-        players=players,
-        winner=winner,
-        raw_events=events,
-        adjudicated=False,
+        moves=moves,
+        winner_number=winner_number,
+        winner_name=winner_name,
+        timestamp=timestamp,
+        num_people=num_people,
+        method=res.get("method", "vss"),
         winner_image=winner_image,
+        timeline=res.get("timeline", []),
     )
+
+
+def save_game(result: GameResult) -> None:
+    db = get_db()
+    db.execute(
+        """INSERT INTO games
+           (played_at, challenge, winner_name, winner_number, num_people,
+            timestamp, method, winner_image)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            datetime.now(timezone.utc).isoformat(),
+            json.dumps(result.moves),
+            result.winner_name,
+            result.winner_number,
+            result.num_people,
+            result.timestamp,
+            result.method,
+            result.winner_image,
+        ),
+    )
+    db.commit()
+
+
+def process_upload(moves: list[str], player_names: list[str]):
+    """Shared POST handling: validate file, transcode, run pipeline, persist.
+
+    Returns (result, error_message). Exactly one is non-None.
+    """
+    video = request.files.get("video")
+    if not video or video.filename == "":
+        return None, "Please select a video file."
+    if not allowed_file(video.filename):
+        return None, f"Unsupported format. Allowed: {', '.join(sorted(ALLOWED_EXT))}"
+
+    safe_name = secure_filename(video.filename)
+    save_path = UPLOAD_DIR / f"{uuid.uuid4().hex}_{safe_name}"
+    video.save(save_path)
+    mp4_path = save_path
+
+    try:
+        mp4_path = ensure_mp4(save_path)
+        result = run_pipeline(str(mp4_path), moves, player_names)
+        save_game(result)
+        return result, None
+    except Exception as exc:
+        log.exception("Pipeline failed")
+        return None, f"Processing error: {exc}"
+    finally:
+        save_path.unlink(missing_ok=True)
+        if mp4_path != save_path:
+            mp4_path.unlink(missing_ok=True)
+
+
+def parse_names(csv: str) -> list[str]:
+    return [n.strip() for n in csv.split(",") if n.strip()]
 
 
 # -- Routes -------------------------------------------------------------------
@@ -182,77 +248,29 @@ def run_pipeline(
 @app.route("/", methods=["GET", "POST"])
 def index():
     result: GameResult | None = None
-    sequence = generate_sequence()
+    challenge = generate_challenge()
 
     if request.method == "POST":
-        seq_json = request.form.get("sequence_json", "")
-        if seq_json:
+        raw = request.form.get("challenge_json", "")
+        if raw:
             try:
-                sequence = json.loads(seq_json)
+                parsed = json.loads(raw)
+                if isinstance(parsed, list) and parsed:
+                    challenge = [str(m) for m in parsed]
             except json.JSONDecodeError:
                 pass
 
-        lenient = request.form.get("lenient") == "on"
-        names_csv = request.form.get("player_names", "")
-        player_names = [n.strip() for n in names_csv.split(",") if n.strip()]
+        player_names = parse_names(request.form.get("player_names", ""))
+        result, error = process_upload(challenge, player_names)
+        if error:
+            flash(error, "error")
 
-        video = request.files.get("video")
-        if not video or video.filename == "":
-            flash("Please select a video file.", "error")
-            return _render_index(sequence)
-
-        if not allowed_file(video.filename):
-            flash(f"Unsupported format. Allowed: {', '.join(sorted(ALLOWED_EXT))}", "error")
-            return _render_index(sequence)
-
-        safe_name = secure_filename(video.filename)
-        unique_name = f"{uuid.uuid4().hex}_{safe_name}"
-        save_path = UPLOAD_DIR / unique_name
-
-        video.save(save_path)
-        mp4_path = save_path
-
-        try:
-            mp4_path = ensure_mp4(save_path)
-            result = run_pipeline(str(mp4_path), sequence, player_names, lenient=lenient)
-
-            db = get_db()
-            db.execute(
-                """INSERT INTO games
-                   (played_at, challenge, winner_name, total_players,
-                    results_json, events_json, adjudicated)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    datetime.now(timezone.utc).isoformat(),
-                    json.dumps(sequence),
-                    result.winner.name if result.winner else None,
-                    len(result.players),
-                    json.dumps([asdict(p) for p in result.players]),
-                    json.dumps([asdict(e) for e in result.raw_events]),
-                    int(result.adjudicated),
-                ),
-            )
-            db.commit()
-        except Exception as exc:
-            log.exception("Pipeline failed")
-            flash(f"Processing error: {exc}", "error")
-        finally:
-            save_path.unlink(missing_ok=True)
-            if mp4_path != save_path:
-                mp4_path.unlink(missing_ok=True)
-
-    return _render_index(sequence, result)
-
-
-def _render_index(sequence: list[str], result: GameResult | None = None):
     return render_template(
         "index.html",
-        sequence=sequence,
-        emojis=ACTION_EMOJIS,
-        vocab=ACTION_VOCAB,
+        challenge=challenge,
+        challenge_json=json.dumps(challenge),
+        record_seconds=RECORD_SECONDS,
         result=result,
-        sequence_json=json.dumps(sequence),
-        time_limit=TIME_LIMIT,
     )
 
 
@@ -265,83 +283,59 @@ def leaderboard():
         GROUP BY winner_name ORDER BY wins DESC LIMIT 20
     """).fetchall()
 
-    recent = db.execute("""
-        SELECT played_at, challenge, winner_name, total_players, adjudicated
-        FROM games ORDER BY id DESC LIMIT 10
+    winners = db.execute("""
+        SELECT played_at, challenge, winner_name, method, winner_image, timestamp
+        FROM games
+        WHERE winner_image IS NOT NULL
+        ORDER BY id DESC LIMIT 24
     """).fetchall()
 
-    return render_template("leaderboard.html", rankings=rankings, recent=recent)
+    def moves_of(row):
+        try:
+            return json.loads(row["challenge"])
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    gallery = [
+        {
+            "played_at": w["played_at"],
+            "moves": moves_of(w),
+            "winner_name": w["winner_name"],
+            "method": w["method"],
+            "winner_image": w["winner_image"],
+            "timestamp": w["timestamp"],
+        }
+        for w in winners
+    ]
+
+    return render_template("leaderboard.html", rankings=rankings, gallery=gallery)
 
 
-@app.route("/summarize", methods=["GET", "POST"])
-def summarize():
-    summary_result = None
-    error = None
+@app.route("/test", methods=["GET", "POST"])
+def test_page():
+    result: GameResult | None = None
 
     if request.method == "POST":
-        from vss_client import upload_video, summarize_video, delete_video
-
-        video = request.files.get("video")
-        if not video or video.filename == "":
-            flash("Please select a video file.", "error")
-            return render_template("summarize.html", summary_result=None, error=None)
-
-        if not allowed_file(video.filename):
-            flash(f"Unsupported format. Allowed: {', '.join(sorted(ALLOWED_EXT))}", "error")
-            return render_template("summarize.html", summary_result=None, error=None)
-
-        safe_name = secure_filename(video.filename)
-        unique_name = f"{uuid.uuid4().hex}_{safe_name}"
-        save_path = UPLOAD_DIR / unique_name
-        video.save(save_path)
-        mp4_path = save_path
-
         try:
-            mp4_path = ensure_mp4(save_path)
+            moves = json.loads(request.form.get("moves_json", "[]"))
+        except json.JSONDecodeError:
+            moves = []
+        moves = [str(m).strip() for m in moves if str(m).strip()]
 
-            caption_prompt = request.form.get("caption_prompt", "Describe what is happening in this video.").strip()
-            chunk_duration = int(request.form.get("chunk_duration", 1))
-            num_frames_per_chunk = int(request.form.get("num_frames_per_chunk", 8))
-            enable_cv_metadata = request.form.get("enable_cv_metadata") == "on"
-            cv_pipeline_prompt = request.form.get("cv_pipeline_prompt", "person").strip()
-            temperature = float(request.form.get("temperature", 0.05))
-            max_tokens = int(request.form.get("max_tokens", 1024))
-            caption_summarization_prompt = request.form.get("caption_summarization_prompt", "").strip() or None
-            summary_aggregation_prompt = request.form.get("summary_aggregation_prompt", "").strip() or None
+        if not moves:
+            flash("Write at least one movement.", "error")
+        else:
+            player_names = parse_names(request.form.get("player_names", ""))
+            result, error = process_upload(moves, player_names)
+            if error:
+                flash(error, "error")
 
-            sensor_id = upload_video(str(mp4_path))
-            try:
-                summary_result = summarize_video(
-                    sensor_id,
-                    caption_prompt,
-                    chunk_duration=chunk_duration,
-                    num_frames_per_chunk=num_frames_per_chunk,
-                    enable_cv_metadata=enable_cv_metadata,
-                    cv_pipeline_prompt=cv_pipeline_prompt,
-                    temperature=temperature,
-                    caption_summarization_prompt=caption_summarization_prompt,
-                    summary_aggregation_prompt=summary_aggregation_prompt,
-                    max_tokens=max_tokens,
-                )
-            finally:
-                delete_video(sensor_id)
-
-        except Exception as exc:
-            log.exception("Summarize pipeline failed")
-            error = str(exc)
-        finally:
-            save_path.unlink(missing_ok=True)
-            if mp4_path != save_path:
-                mp4_path.unlink(missing_ok=True)
-
-    return render_template("summarize.html", summary_result=summary_result, error=error)
+    return render_template("test.html", result=result)
 
 
-@app.route("/api/sequence", methods=["POST"])
-def api_new_sequence():
-    """Generate a new random sequence (for AJAX refresh)."""
-    seq = generate_sequence()
-    return json.dumps(seq), 200, {"Content-Type": "application/json"}
+@app.route("/api/challenge", methods=["POST"])
+def api_new_challenge():
+    return json.dumps(generate_challenge()), 200, {"Content-Type": "application/json"}
 
 
 @app.errorhandler(413)
