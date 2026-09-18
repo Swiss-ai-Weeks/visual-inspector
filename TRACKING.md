@@ -32,7 +32,7 @@ Unchanged from before, just split apart. `process_video.py` does:
 3. `POST /api/v1/videos/{sensor_id}/complete` — **this is the step that runs
    RTVI-CV** (detection + tracking) and RTVI-Embed over the clip. It used to be
    swallowed as a harmless warning; without it there is no tracking data at
-   all, so `upload_video()` now returns `(sensor_id, cv_ready)`.
+   all, so `upload_video()` now returns `(sensor_id, video_name, cv_ready)`.
 4. `POST /chat` (endpoint auto-discovered) with a `video_understanding` prompt.
 
 The upload/ask split matters: `query_vss_agent_video()` used to upload *and*
@@ -46,26 +46,68 @@ before uploading. RTVI-CV rejects a duplicate camera id
 run. Sensor deletion after the run is **opt-in** (`DELETE_SENSORS=1`): deleting
 a sensor also drops its CV frames from Elasticsearch.
 
+## Names, ids, and the one rule about cleanup
+
 One upload leaves traces in **three** registries — the VST sensor list and the
 VSS asset store, both keyed by the stream UUID, and `mdx-raw-*`, keyed by the
-video *name* — and they are cleaned up independently. Deleting the sensor does
-not always drop the asset, and VST hands the same stream id back for a file of
-the same name, so the orphan comes back and `/complete` fails the fan-out with
+video *name* — and they are cleaned up independently. VST hands the same stream
+id back for a file of the same name, so an asset an earlier run orphaned under
+that id comes back with it and `/complete` fails the fan-out with
 
 ```
 502  Embedding generation failed ... {"code":"AssetAlreadyExists",
      "message":"Asset with id <uuid> already exists."}
 ```
 
-which looks impossible, because that UUID was issued seconds earlier. Hence:
-`purge_videos()` re-reads the registry and warns about survivors rather than
-counting successful `DELETE`s, and `upload_video()` clears the id with
-`drop_asset()` and retries `/complete` once before giving up. The Flask app
-rarely hits this — it saves every upload as `<uuid4>_<name>.mp4`, so each run has
-its own filename. `tracking_walkthrough.ipynb`, which keeps the readable name
-`dance_vst` on purpose, collides with itself on every re-run; step 5 there also
-falls back to a stamped filename, and `UNIQUE_UPLOAD_NAME = True` in step 0
-sidesteps the collision from the start.
+which looks impossible, because that UUID was issued seconds earlier.
+`purge_videos()` cannot prevent it: it lists VST *sensors*, and the sensor for
+that id is already gone.
+
+**The rule: all cleanup happens before the upload. Never delete anything under
+a stream id you have just been issued.** That id is the live stream, and
+`/complete` starts RTVI-CV before it fails on the embedding step — so "clear the
+id and retry" deletes the stream out from under a tracker that is already
+running. A 15 s clip came back with 0.2 s of tracking that way, plus a
+double-ingest warning from the stub it left behind. It is pitfall #4 (deleting a
+sensor mid-write) wearing a different hat.
+
+So `upload_video()`:
+
+- purges earlier runs of the clip **first**, by base filename, which also drops
+  their Elasticsearch documents;
+- registers the clip under `<name>_<8 hex>.mp4`, a name no earlier run can own,
+  so there is no id to inherit. The bytes are the local file; only the
+  `filename` fields of the upload decide the name;
+- answers a collision with **another name**, not a delete, and returns the name
+  it actually used — hence the `video_name` in the return tuple. Callers must
+  query Elasticsearch with that, not with `Path(video_path).stem`.
+
+`tracking_walkthrough.ipynb` keeps the readable name (`dance_vst`) on purpose so
+the Elasticsearch queries stay legible, which is why it is the one caller that
+can collide with itself; step 5 there re-uploads under a stamped name, and
+`UNIQUE_UPLOAD_NAME = True` in step 0 avoids the collision from the start.
+
+### Two refusals that look alike
+
+`/complete` fans out to RTVI-Embed **and** RTVI-CV, and each has its own idea of
+what already exists:
+
+| body | registry | fix |
+| --- | --- | --- |
+| `AssetAlreadyExists` | VSS asset store, keyed by stream id | a new upload name → a new id, retried automatically |
+| `STREAM_ADD_FAIL, Duplicate Camera id` | RTVI-CV's camera table | **not ours.** A new name gets a new id and is refused just the same, so the duplicate is a camera left by a run that died before anything removed it |
+
+`upload_video()` retries only the first. For the second it says so and stops —
+re-uploading just adds another dead stream. `tmp/probe_cv_service.py` lists what
+VST still has registered, hunts for RTVI-CV's own API among the listening ports,
+and deletes explicitly named sensors through the agent. If the refusal survives
+an empty sensor list, the camera is orphaned inside RTVI-CV and only restarting
+that service clears it.
+
+`wait_for_cv()` only trusts a flat frame count once the clip is covered. Below
+`TRACKING_CV_MIN_COVERAGE` a plateau means RTVI-CV is slow, not finished, and it
+keeps waiting for `TRACKING_CV_STALL` seconds — three quiet polls used to be
+enough to report 0.2 s of a 15 s clip as "settled".
 
 ## Where the tracking data actually lives
 
@@ -207,6 +249,9 @@ ffmpeg `drawbox` + `drawtext`, one pair per span, written to a
 | `VSS_UPLOAD_TS` | `2025-01-01T00:00:00` | frame timestamps are offsets from this |
 | `VSS_VST_URL` | `http://127.0.0.1:30000` | sensor registry |
 | `TRACKING_MAX_FRAMES` | `10000` | ES `max_result_window` |
+| `TRACKING_CV_TIMEOUT` | `900` | total budget waiting for RTVI-CV |
+| `TRACKING_CV_STALL` | `90` | how long a flat frame count is tolerated below `MIN_COVERAGE` |
+| `TRACKING_CV_MIN_COVERAGE` | `0.9` | fraction of the clip a plateau must cover to mean "done" |
 | `TRACKING_IOU_MERGE` / `_MERGE_DOMINANCE` / `_MIN_CONFIDENCE` | `0.55` / `0.5` / `0.0` | duplicate suppression |
 | `TRACKING_MIN_POINTS` / `_MIN_SECONDS` | `5` / `0.3` | flicker rejection |
 | `KEEP_UPLOADS` | set in `run.sh` | now actually honoured by `app.py` |
@@ -234,7 +279,9 @@ curl -s 'localhost:9200/mdx-raw-*/_search?size=0' -H 'Content-Type: application/
   fetched `_source`, so every detection failed the confidence filter) — that is
   fixed, but the sweep has not been re-run since.
 - The `dance_vst` double-ingest question (657 docs for an 11 s clip at ~30 fps,
-  roughly double expected) was never resolved. Settle it with the cardinality
-  query above **before** tuning thresholds.
+  roughly double expected) is explained: every run of the notebook ingested the
+  clip under the same name, so two runs' frames share one `sensorId`. Unique
+  upload names prevent it; the cardinality query above still settles any doubt
+  **before** tuning thresholds.
 - The full upload → overlay path through the Flask UI has been exercised less
   than the read-from-ES path.

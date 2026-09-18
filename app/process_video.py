@@ -115,6 +115,10 @@ def purge_videos(filename: str) -> int:
     A successful DELETE is not proof the sensor is gone, so the registry is
     re-read afterwards and survivors are reported: VST hands the same stream id
     back for a file of the same name, and its asset comes back with it.
+
+    This only ever runs BEFORE an upload. It also only sees what VST lists, so
+    an asset orphaned under a stream id whose sensor is already gone is
+    invisible here — that is what `upload_video()`'s unique name is for.
     """
     stem = Path(filename).stem  # VST stores the name without the extension
 
@@ -134,31 +138,6 @@ def purge_videos(filename: str) -> int:
     return removed
 
 
-def drop_asset(asset_id: str) -> None:
-    """Best-effort removal of everything the agent still holds under `asset_id`.
-
-    The VSS asset store is keyed by the VST stream id, and deleting the sensor
-    does not always drop it. The agent does not document an asset route, so the
-    single-id DELETE routes it advertises are swept; the ones that do not know
-    the id answer 404, which is harmless.
-    """
-    try:
-        spec = requests.get(f"{AGENT_URL}/openapi.json", timeout=15).json()
-    except (requests.RequestException, ValueError):
-        return
-
-    for route, ops in spec.get("paths", {}).items():
-        if "delete" not in ops or route.count("{") != 1:
-            continue
-        if not re.search(r"video|file|asset|stream", route, re.I):
-            continue
-        url = AGENT_URL + re.sub(r"\{[^}]+\}", asset_id, route)
-        try:
-            requests.delete(url, timeout=(10, 120))
-        except requests.RequestException:
-            pass
-
-
 def delete_video(sensor_id: str) -> bool:
     """Remove a sensor from VSS. Best-effort — never raises."""
     try:
@@ -174,9 +153,27 @@ def delete_video(sensor_id: str) -> bool:
 # Video upload (agent -> VST -> complete)
 # --------------------------------------------------------------------------
 
-_COLLISION = re.compile(
-    r"AssetAlreadyExists|Duplicate Camera id|already exists", re.I
-)
+# Two different registries refuse a clip, and only one of them is ours to fix.
+#   asset  — the VSS asset store already holds this stream id. A name no earlier
+#            run has used gets a fresh id, so a retry under a new name works.
+#   camera — RTVI-CV already has a camera for this add. A new name does NOT help:
+#            it rejects ids that were never ours to begin with, which means it is
+#            holding cameras from runs that died before anything removed them.
+_ASSET_COLLISION = re.compile(r"AssetAlreadyExists|already exists", re.I)
+_CAMERA_COLLISION = re.compile(r"Duplicate Camera id|STREAM_ADD_FAIL", re.I)
+
+
+def _unique_upload_name(filename: str) -> str:
+    """A stream name no earlier run can already own.
+
+    VST keys a stream by filename and hands the same id back for the same name,
+    so a clip uploaded twice inherits the first run's id — along with whatever
+    that run left behind in the VSS asset store. A fresh name means a fresh id,
+    which is the only collision fix available: once VST has issued the id it is
+    the live stream, and deleting anything under it tears down the CV run.
+    """
+    src = Path(filename)
+    return f"{src.stem}_{uuid.uuid4().hex[:8]}{src.suffix}"
 
 
 def _complete(sensor_id: str, payload: dict) -> requests.Response | None:
@@ -197,21 +194,43 @@ def _complete(sensor_id: str, payload: dict) -> requests.Response | None:
         return None
 
 
-def upload_video(video_path: str) -> tuple[str, bool]:
+def upload_video(
+    video_path: str,
+    upload_name: str | None = None,
+    _retries: int = 1,
+) -> tuple[str, str, bool]:
     """Register a local video with VSS.
 
-    Returns (sensor_id, cv_ready). `cv_ready` reports whether the /complete
-    fan-out to RTVI-CV / RTVI-Embed succeeded — video_understanding works
-    without it, but the CV tracking metadata does not exist unless it did.
+    Returns `(sensor_id, video_name, cv_ready)`:
+
+    * `sensor_id` — the VST stream UUID, what the agent's tools take.
+    * `video_name` — the name Elasticsearch files the CV frames under, i.e. the
+      uploaded filename minus its extension. It is **not** `Path(video_path).stem`
+      any more: the clip is uploaded under a unique name, so the caller has to
+      use the one it gets back.
+    * `cv_ready` — whether `/complete`'s fan-out to RTVI-CV / RTVI-Embed
+      succeeded. `video_understanding` works without it, but the CV tracking
+      metadata does not exist unless it did.
+
+    The unique name is the whole point. Uploading under the plain filename
+    inherits the stream id of every earlier run of that clip, and an asset
+    orphaned under that id fails `/complete` with `AssetAlreadyExists`. There is
+    no way to repair that after the fact: by then the id is the live stream, so
+    deleting anything under it tears down the CV run that just started — which
+    is how a 15 s clip ends up with 0.2 s of tracking. All cleanup therefore
+    happens before the upload, and a collision is answered with a new name.
     """
     src = Path(video_path).resolve()
     if not src.is_file():
         raise FileNotFoundError(src)
 
-    filename = src.name
-    mime = mimetypes.guess_type(filename)[0] or "video/mp4"
+    # Before anything is registered: drop earlier runs of this clip, so their
+    # sensors and their Elasticsearch documents stop shadowing this one.
+    purge_videos(src.name)
 
-    purge_videos(filename)
+    filename = upload_name or _unique_upload_name(src.name)
+    video_name = Path(filename).stem
+    mime = mimetypes.guess_type(filename)[0] or "video/mp4"
 
     # 1. Ask the agent for the chunked-upload URL.
     init = requests.post(
@@ -224,7 +243,8 @@ def upload_video(video_path: str) -> tuple[str, bool]:
     if not upload_url:
         raise RuntimeError(f"No upload url returned: {init.text}")
 
-    # 2. Single-chunk POST to VST (nvstreamer protocol).
+    # 2. Single-chunk POST to VST (nvstreamer protocol). The bytes come from
+    #    `src`; only the name VST files them under is ours.
     identifier = uuid.uuid4().hex
     with src.open("rb") as handle:
         sent = requests.post(
@@ -255,16 +275,34 @@ def upload_video(video_path: str) -> tuple[str, bool]:
     payload["filename"] = filename
     done = _complete(sensor_id, payload)
 
-    # A stale registration under this id fails the fan-out before any CV runs.
-    # Clearing the asset and retrying once is cheap; re-uploading is not, and
-    # would need a new filename to be of any use.
-    if done is not None and not done.ok and _COLLISION.search(done.text or ""):
+    body = "" if done is None else (done.text or "")
+
+    # The asset store owns this id: take a new name, which gets a new id. Never
+    # delete under this one — /complete may already have started RTVI-CV on it.
+    if (done is not None and not done.ok and _retries > 0
+            and _ASSET_COLLISION.search(body)
+            and not _CAMERA_COLLISION.search(body)):
         print(
-            f"[warn] /complete: id {sensor_id} is still registered from an "
-            "earlier run; clearing it and retrying"
+            f"[warn] /complete: the asset store already owns id {sensor_id} "
+            f"({done.status_code}: {body[:300]}); re-uploading under a new name"
         )
-        drop_asset(sensor_id)
-        done = _complete(sensor_id, payload)
+        return upload_video(
+            video_path, _unique_upload_name(src.name), _retries - 1
+        )
+
+    # RTVI-CV refused the add. Retrying is pointless: this id and this name are
+    # both new, so what it calls a duplicate is a camera left behind by a run
+    # that died before anything removed it. Only RTVI-CV can be cleaned up here.
+    if done is not None and _CAMERA_COLLISION.search(body):
+        print(
+            f"[warn] /complete: RTVI-CV refused the stream — 'Duplicate Camera "
+            f"id' — for a name ({video_name}) and an id ({sensor_id}) it has "
+            "never seen. It is holding cameras from earlier runs, and nothing "
+            "on this side can clear them: a new name gets a new id and is "
+            "refused just the same. Inspect what is registered with\n"
+            "    python3 tmp/probe_cv_service.py\n"
+            "and remove the dead sensors, or restart the RTVI-CV service."
+        )
 
     if done is None or not done.ok:
         detail = "no response" if done is None else f"{done.status_code} {done.text[:500]}"
@@ -274,7 +312,7 @@ def upload_video(video_path: str) -> tuple[str, bool]:
             "for this video."
         )
 
-    return sensor_id, bool(done is not None and done.ok)
+    return sensor_id, video_name, bool(done is not None and done.ok)
 
 
 # --------------------------------------------------------------------------
@@ -309,7 +347,7 @@ def ask_agent(sensor_id: str, prompt: str, filename: str = "") -> str:
 
 def query_vss_agent_video(video_path: str, prompt: str) -> str:
     """Upload a video to VSS, then ask the agent about it."""
-    sensor_id, _ = upload_video(video_path)
+    sensor_id, _, _ = upload_video(video_path)
     return ask_agent(sensor_id, prompt, Path(video_path).name)
 
 

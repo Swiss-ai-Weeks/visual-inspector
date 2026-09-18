@@ -42,6 +42,14 @@ UPLOAD_TIMESTAMP = os.environ.get("VSS_UPLOAD_TS", "2025-01-01T00:00:00")
 # Elasticsearch refuses a plain search beyond max_result_window (10k default).
 MAX_FRAMES = int(os.environ.get("TRACKING_MAX_FRAMES", "10000"))
 
+# How long to wait for RTVI-CV, which runs slower than real time here: an
+# overall budget, plus how long a flat frame count is tolerated before a clip
+# that is not yet covered is declared stalled.
+CV_TIMEOUT = float(os.environ.get("TRACKING_CV_TIMEOUT", "900"))
+CV_STALL_SECONDS = float(os.environ.get("TRACKING_CV_STALL", "90"))
+# Fraction of the clip that has to be covered for a flat count to mean "done".
+CV_MIN_COVERAGE = float(os.environ.get("TRACKING_CV_MIN_COVERAGE", "0.9"))
+
 # Object embeddings dominate the index (611MB); never pull them.
 _SOURCE_FIELDS = (
     "timestamp,id,sensorId,"
@@ -173,9 +181,11 @@ def cv_progress(video_name: str) -> tuple[int, float | None]:
 def wait_for_cv(
     video_name: str,
     duration: float | None = None,
-    timeout: float = 300.0,
+    timeout: float = CV_TIMEOUT,
     poll: float = 3.0,
     stable_polls: int = 3,
+    min_coverage: float = CV_MIN_COVERAGE,
+    on_poll=None,
 ) -> int:
     """Block until RTVI-CV has finished writing frames for this video.
 
@@ -185,16 +195,28 @@ def wait_for_cv(
     the sensor at that point kills the stream outright — which is how an
     11-second clip ends up with 0.33 seconds of tracking.
 
+    A flat frame count is only trusted once the clip is actually covered. Below
+    `min_coverage` a plateau is treated as RTVI-CV being slow rather than
+    finished, and the wait continues for `CV_STALL_SECONDS` before giving up —
+    three quiet polls nine seconds apart used to be enough to report 0.2 s of a
+    15 s clip as "settled".
+
+    `on_poll(count, latest)` is called after every poll, for callers that would
+    otherwise sit silent for minutes.
+
     Returns the final frame count. Finishing early is not an error: the caller
-    works with whatever landed.
+    works with whatever landed, and a short result is logged as a warning.
     """
     import time
 
     deadline = time.time() + timeout
+    patient_polls = max(stable_polls, int(CV_STALL_SECONDS / max(poll, 0.1)))
     last_count, stable = -1, 0
 
     while time.time() < deadline:
         count, latest = cv_progress(video_name)
+        if on_poll:
+            on_poll(count, latest)
 
         # Covered the whole clip? Done, no need to wait for the count to settle.
         if duration and latest is not None and latest >= duration - 0.5:
@@ -203,10 +225,14 @@ def wait_for_cv(
 
         if count and count == last_count:
             stable += 1
-            if stable >= stable_polls:
-                logger.info(
-                    "CV settled for %s: %d frames, latest %.2fs (clip %.2fs)",
-                    video_name, count, latest or 0.0, duration or 0.0,
+            coverage = (latest / duration) if (duration and latest) else 0.0
+            # A plateau short of the clip length is a stall, not an ending.
+            limit = stable_polls if coverage >= min_coverage else patient_polls
+            if stable >= limit:
+                report = logger.info if coverage >= min_coverage else logger.warning
+                report(
+                    "CV stopped for %s: %d frames, latest %.2fs of %.2fs (%.0f%%)",
+                    video_name, count, latest or 0.0, duration or 0.0, coverage * 100,
                 )
                 return count
         else:

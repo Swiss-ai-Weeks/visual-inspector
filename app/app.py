@@ -63,11 +63,13 @@ def prune_overlays() -> None:
         stale.unlink(missing_ok=True)
 
 
-def build_overlay(mp4_path: Path) -> str:
+def build_overlay(mp4_path: Path, video_name: str) -> str:
     """Fetch this clip's CV tracks and render them over it.
 
     Keyed by the video name rather than the sensor id: VSS records CV frames
     under `sensorId = <uploaded filename without extension>`, not the VST UUID.
+    That name comes from `upload_video()`, which registers the clip under a
+    name of its own — it is not this file's stem.
 
     Returns the overlay's filename, used as the token in the /overlay route.
     """
@@ -75,9 +77,9 @@ def build_overlay(mp4_path: Path) -> str:
 
     # RTVI-CV writes frames asynchronously and slower than real time. Reading
     # early truncates the timeline, so wait for it to cover the clip first.
-    wait_for_cv(mp4_path.stem, probe_duration(mp4_path))
+    wait_for_cv(video_name, probe_duration(mp4_path))
 
-    tracks = fetch_tracks(mp4_path.stem, (width, height))
+    tracks = fetch_tracks(video_name, (width, height))
 
     overlay_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{OVERLAY_SUFFIX}"
     render_overlay(mp4_path, tracks, overlay_path)
@@ -133,10 +135,11 @@ def index():
 
         mp4_path = save_path
         sensor_id = None
+        video_name = ""
         cv_ready = False
         try:
             mp4_path = ensure_mp4(save_path)
-            sensor_id, cv_ready = upload_video(str(mp4_path))
+            sensor_id, video_name, cv_ready = upload_video(str(mp4_path))
             result = ask_agent(sensor_id, prompt, mp4_path.name)
             match = re.search(r"\b(\d+)\b", result or "")
             winner = match.group(1) if match else None
@@ -151,7 +154,7 @@ def index():
                     raise TrackingUnavailable(
                         "the CV pipeline did not run for this clip (/complete failed)"
                     )
-                overlay_token = build_overlay(mp4_path)
+                overlay_token = build_overlay(mp4_path, video_name)
             except Exception as exc:
                 app.logger.exception("Tracking overlay failed")
                 flash(f"Tracking unavailable: {exc}", "error")
