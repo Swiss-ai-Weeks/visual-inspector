@@ -1,0 +1,53 @@
+<div class="result-card">
+  <!-- Challenge -->
+  <p class="result-label">Challenge</p>
+  <div class="sequence-display compact">
+    {% for move in result.moves %}
+      {% if not loop.first %}<span class="seq-arrow">&rarr;</span>{% endif %}
+      <span class="seq-step">
+        <span class="seq-emoji">{{ move_emoji(move) }}</span>
+        <span class="seq-name">{{ move }}</span>
+      </span>
+    {% endfor %}
+  </div>
+
+  {% if result.has_winner %}
+  <div class="winner-banner">
+    <span class="winner-emoji">🏆</span>
+    <span class="winner-text">{{ result.winner_name }} wins!</span>
+  </div>
+
+  <p class="result-meta">
+    {% if result.timestamp is not none %}Finished at {{ '%.1f' | format(result.timestamp | float) }}s &middot; {% endif %}
+    {{ result.num_people }} player{{ 's' if result.num_people != 1 }} seen &middot;
+    decided by
+    <span class="method-tag vss" title="VLM captions + text-NIM reasoning">VSS</span>
+  </p>
+
+  {% if result.winner_image %}
+  <div class="winner-photo">
+    <img src="static/snapshots/{{ result.winner_image }}" alt="{{ result.winner_name }} boxed as the winner">
+  </div>
+  {% endif %}
+  {% else %}
+  <div class="no-winner-banner">
+    No one performed the challenge in this clip.
+  </div>
+  {% endif %}
+
+  {% if result.timeline %}
+  <details class="custom-builder" style="margin-top:20px">
+    <summary class="result-label" style="cursor:pointer">VSS caption timeline</summary>
+    <div class="event-timeline">
+      {% for start, end, text in result.timeline %}
+      <div class="timeline-event">
+        <span class="tl-time">{{ '%.0f' | format(start | float) }}&ndash;{{ '%.0f' | format(end | float) }}s</span>
+        <span class="tl-action">{{ text }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+
+  <a href="{{ url_prefix }}{{ back_href | default('/') }}" class="play-again-btn">{{ back_label | default('Play again') }}</a>
+</div>
