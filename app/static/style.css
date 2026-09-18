@@ -407,6 +407,9 @@ body {
 
 .mode-btn:not(.active):hover { color: var(--text); }
 
+/* Detector (VSS vs YOLO) toggle sits at the top of the form. */
+.method-toggle .mode-btn.active { color: var(--accent); }
+
 /* ── Camera ── */
 .camera-wrap {
   position: relative;

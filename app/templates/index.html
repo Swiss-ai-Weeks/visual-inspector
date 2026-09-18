@@ -27,6 +27,17 @@
 <div class="form-card">
   <form method="POST" enctype="multipart/form-data" id="form">
     <input type="hidden" name="challenge_json" id="challenge_json" value='{{ challenge_json }}'>
+    <input type="hidden" name="method" id="method" value="{{ method }}">
+
+    <!-- Detector toggle -->
+    <div class="mode-toggle method-toggle">
+      <button type="button" class="mode-btn {{ 'active' if method == 'yolo' }}" id="btn-yolo" onclick="setMethod('yolo')">
+        🤸 YOLO pose
+      </button>
+      <button type="button" class="mode-btn {{ 'active' if method == 'vss' }}" id="btn-vss" onclick="setMethod('vss')">
+        🧠 VSS
+      </button>
+    </div>
 
     <!-- Mode toggle -->
     <div class="mode-toggle">
@@ -171,6 +182,13 @@ document.getElementById('form').addEventListener('submit', () => {
   document.getElementById('submit-btn').disabled = true;
   document.getElementById('loading').classList.add('active');
 });
+
+/* -- Detector switcher (VSS vs local YOLO pose) -- */
+function setMethod(method) {
+  document.getElementById('method').value = method;
+  document.getElementById('btn-yolo').classList.toggle('active', method === 'yolo');
+  document.getElementById('btn-vss').classList.toggle('active', method === 'vss');
+}
 
 /* -- Mode switcher -- */
 function setMode(mode) {

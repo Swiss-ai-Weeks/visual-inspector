@@ -14,6 +14,21 @@
 
   <form method="POST" enctype="multipart/form-data" id="test-form">
     <input type="hidden" name="moves_json" id="moves_json" value="[]">
+    <input type="hidden" name="method" id="method" value="{{ method }}">
+
+    <!-- Detector toggle -->
+    <div class="mode-toggle method-toggle">
+      <button type="button" class="mode-btn {{ 'active' if method == 'yolo' }}" id="btn-yolo" onclick="setMethod('yolo')">
+        🤸 YOLO pose
+      </button>
+      <button type="button" class="mode-btn {{ 'active' if method == 'vss' }}" id="btn-vss" onclick="setMethod('vss')">
+        🧠 VSS
+      </button>
+    </div>
+    <p style="color:var(--muted);font-size:.85rem;margin:-.5rem 0 1rem">
+      YOLO pose detects a fixed gesture set (arms crossed, clap, hands on head,
+      raise one arm, crouch, touch a knee, wave, point). VSS handles any free-text move.
+    </p>
 
     <!-- Movement builder -->
     <div class="field-group">
@@ -108,6 +123,12 @@ moveInput.addEventListener('keydown', e => {
   if (e.key === 'Enter') { e.preventDefault(); addMove(); }
 });
 document.getElementById('clear-seq').addEventListener('click', () => { moves = []; render(); });
+
+function setMethod(method) {
+  document.getElementById('method').value = method;
+  document.getElementById('btn-yolo').classList.toggle('active', method === 'yolo');
+  document.getElementById('btn-vss').classList.toggle('active', method === 'vss');
+}
 
 document.getElementById('test-form').addEventListener('submit', e => {
   if (!moves.length) {
