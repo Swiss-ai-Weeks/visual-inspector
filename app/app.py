@@ -34,10 +34,11 @@ DB_PATH = BASE_DIR / "movematch.db"
 
 ALLOWED_EXT = {"mp4", "mov", "avi", "mkv", "webm"}
 MAX_MB = 50
-SEQUENCE_LENGTH = 2
 CHUNK_DURATION = 2
 CHUNK_OVERLAP = 1
-RECORD_SECONDS = 8
+
+MIN_DIFFICULTY, MAX_DIFFICULTY, DEFAULT_DIFFICULTY = 1, 5, 3
+MIN_SECONDS, MAX_SECONDS, DEFAULT_SECONDS = 5, 10, 5
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -122,8 +123,15 @@ def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXT
 
 
-def generate_challenge() -> list[str]:
-    return random.sample(MOVE_POOL, min(SEQUENCE_LENGTH, len(MOVE_POOL)))
+def generate_challenge(num_moves: int = DEFAULT_DIFFICULTY) -> list[str]:
+    return random.sample(MOVE_POOL, min(num_moves, len(MOVE_POOL)))
+
+
+def clamp_int(value, lo: int, hi: int, default: int) -> int:
+    try:
+        return max(lo, min(hi, int(value)))
+    except (TypeError, ValueError):
+        return default
 
 
 def ensure_mp4(src: Path) -> Path:
@@ -248,7 +256,10 @@ def parse_names(csv: str) -> list[str]:
 @app.route("/", methods=["GET", "POST"])
 def index():
     result: GameResult | None = None
-    challenge = generate_challenge()
+    source = request.form if request.method == "POST" else request.args
+    difficulty = clamp_int(source.get("difficulty"), MIN_DIFFICULTY, MAX_DIFFICULTY, DEFAULT_DIFFICULTY)
+    record_seconds = clamp_int(source.get("time"), MIN_SECONDS, MAX_SECONDS, DEFAULT_SECONDS)
+    challenge = generate_challenge(difficulty)
 
     if request.method == "POST":
         raw = request.form.get("challenge_json", "")
@@ -269,7 +280,12 @@ def index():
         "index.html",
         challenge=challenge,
         challenge_json=json.dumps(challenge),
-        record_seconds=RECORD_SECONDS,
+        difficulty=difficulty,
+        record_seconds=record_seconds,
+        min_difficulty=MIN_DIFFICULTY,
+        max_difficulty=MAX_DIFFICULTY,
+        min_seconds=MIN_SECONDS,
+        max_seconds=MAX_SECONDS,
         result=result,
     )
 
@@ -335,7 +351,8 @@ def test_page():
 
 @app.route("/api/challenge", methods=["POST"])
 def api_new_challenge():
-    return json.dumps(generate_challenge()), 200, {"Content-Type": "application/json"}
+    difficulty = clamp_int(request.values.get("difficulty"), MIN_DIFFICULTY, MAX_DIFFICULTY, DEFAULT_DIFFICULTY)
+    return json.dumps(generate_challenge(difficulty)), 200, {"Content-Type": "application/json"}
 
 
 @app.errorhandler(413)

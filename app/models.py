@@ -11,12 +11,12 @@ MOVE_POOL = [
     "raise one arm",
     "put your hands on your head",
     "crouch down",
-    "turn around",
     "clap your hands",
     "jump",
     "touch your head",
     "wave",
     "point at the camera",
+    "touch your knee",
 ]
 
 # Best-effort emoji for display. Matched by keyword against a (free-text) move;
@@ -40,7 +40,7 @@ def move_emoji(move: str) -> str:
     for keys, emoji in _EMOJI_KEYWORDS:
         if all(k in low for k in keys):
             return emoji
-    return "\U0001f3af"  # 🎯
+    return "\U0001f3af"  # target
 
 
 @dataclass
