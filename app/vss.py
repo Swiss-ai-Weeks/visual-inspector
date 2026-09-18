@@ -39,9 +39,12 @@ VIA_CONTAINER = os.environ.get(
 _FUSED_GLOB = "/opt/nvidia/via/*_fused.json"
 
 CAPTION_PROMPT = (
-    "Each person has a number label drawn next to them. Write a dense caption "
-    "describing every action, pose, and dance move each person performs, always "
-    "referring to a person by the number shown next to them."
+    "Write a dense caption describing every action, pose, "
+    "and dance move each person performs, always "
+    "referring to a person by the ID drawn on them. "
+    "If no one has an ID drawn on them, do not describe the scene. "
+    "Do not give any overall picture. Only describe persons, "
+    "and the exact movement they are making. "
 )
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
@@ -146,8 +149,7 @@ def first_performer(captions, moves):
     prompt = (
         "You are given timestamped video captions. Each person has a fixed ID "
         "number (shown in the captions, e.g. 'Person 0', 'Person 3') that stays "
-        "the same across time. The numbers are arbitrary tracker labels, NOT "
-        "left-to-right order.\n\n"
+        "the same across time.\n\n"
         f"TIMELINE:\n{timeline}\n\n"
         f"Find the FIRST person (earliest timestamp) to {task}.\n"
         "Answer with ONLY JSON, no prose:\n"
