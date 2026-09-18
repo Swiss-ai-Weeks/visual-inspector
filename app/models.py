@@ -12,7 +12,6 @@ MOVE_POOL = [
     "put your hands on your head",
     "crouch down",
     "clap your hands",
-    "jump",
     "touch your head",
     "wave",
     "point at the camera",
@@ -47,7 +46,7 @@ def move_emoji(move: str) -> str:
 class GameResult:
     """Outcome of one round: who first performed the move / completed the sequence.
 
-    Mirrors the notebook's ``{winner, timestamp, num_people}`` result, plus the
+    Wraps the VSS path's ``{winner, timestamp, num_people}`` result, plus the
     human-facing bits the templates need.
     """
     moves: list[str]
@@ -55,7 +54,7 @@ class GameResult:
     winner_name: str | None = None
     timestamp: float | None = None
     num_people: int = 0
-    method: str = "vss"                     # "vss" | "pose"
+    method: str = "vss"
     winner_image: str | None = None
     timeline: list[tuple] = field(default_factory=list)  # [(start, end, text)]
 

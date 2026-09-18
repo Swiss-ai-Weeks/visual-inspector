@@ -249,6 +249,13 @@ function submitRecording() {
   const mimeType = mediaRecorder.mimeType || 'video/webm';
   const ext      = mimeType.includes('mp4') ? 'mp4' : 'webm';
   const blob     = new Blob(recordedChunks, { type: mimeType });
+  if (blob.size === 0) {
+    alert('Recording came back empty — no video was captured. Please try again.');
+    const btn = document.getElementById('record-btn');
+    btn.disabled = false;
+    btn.textContent = 'Start Recording';
+    return;
+  }
   const file     = new File([blob], `recording.${ext}`, { type: blob.type });
   const dt       = new DataTransfer();
   dt.items.add(file);

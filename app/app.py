@@ -1,9 +1,8 @@
 """MoveMatch -- Flask orchestrator.
 
 Generates a random challenge, routes the uploaded/recorded clip through the VSS
-perception path (VLM captions + text-NIM reasoning, see vss.py), with a
-deterministic pose fallback, and stores the winner (plus a boxed snapshot) for
-the leaderboard.
+perception path (VLM captions + text-NIM reasoning, see vss.py), and stores the
+winner (plus a boxed snapshot) for the leaderboard.
 """
 
 import json
@@ -34,8 +33,8 @@ DB_PATH = BASE_DIR / "movematch.db"
 
 ALLOWED_EXT = {"mp4", "mov", "avi", "mkv", "webm"}
 MAX_MB = 50
-CHUNK_DURATION = 2
-CHUNK_OVERLAP = 1
+CHUNK_DURATION = 1
+CHUNK_OVERLAP = 0
 
 MIN_DIFFICULTY, MAX_DIFFICULTY, DEFAULT_DIFFICULTY = 1, 5, 3
 MIN_SECONDS, MAX_SECONDS, DEFAULT_SECONDS = 5, 10, 5
@@ -137,9 +136,16 @@ def clamp_int(value, lo: int, hi: int, default: int) -> int:
 def ensure_mp4(src: Path) -> Path:
     """Re-encode to H.264/AAC MP4 so the VSS uploader accepts it."""
     dst = src.with_name(src.stem + "_vst.mp4")
-    subprocess.run(
+    proc = subprocess.run(
         [
-            "ffmpeg", "-y", "-i", str(src),
+            "ffmpeg", "-y",
+            # Browser MediaRecorder WebM has streaming headers, no seek index and
+            # often no declared duration; probe generously and rebuild timestamps
+            # so ffmpeg doesn't bail at container open.
+            "-fflags", "+genpts+igndts",
+            "-probesize", "100M",
+            "-analyzeduration", "100M",
+            "-i", str(src),
             "-c:v", "libx264",
             "-profile:v", "baseline",
             "-level", "3.1",
@@ -151,9 +157,15 @@ def ensure_mp4(src: Path) -> Path:
             "-movflags", "+faststart",
             str(dst),
         ],
-        check=True,
         capture_output=True,
+        text=True,
     )
+    if proc.returncode != 0:
+        tail = "\n".join(proc.stderr.strip().splitlines()[-15:])
+        raise RuntimeError(
+            f"ffmpeg failed (exit {proc.returncode}) transcoding {src.name}. "
+            f"The recording may have no video stream or be truncated.\n{tail}"
+        )
     return dst
 
 
@@ -263,6 +275,7 @@ def process_upload(moves: list[str], player_names: list[str]):
     video.save(save_path)
     mp4_path = save_path
 
+    keep = os.environ.get("KEEP_UPLOADS", "0") == "1"
     try:
         mp4_path = ensure_mp4(save_path)
         result = run_pipeline(str(mp4_path), moves, player_names)
@@ -270,9 +283,12 @@ def process_upload(moves: list[str], player_names: list[str]):
         return result, None
     except Exception as exc:
         log.exception("Pipeline failed")
+        if keep:
+            log.warning("KEEP_UPLOADS=1, preserving source for inspection: %s", save_path)
         return None, f"Processing error: {exc}"
     finally:
-        save_path.unlink(missing_ok=True)
+        if not keep:
+            save_path.unlink(missing_ok=True)
         if mp4_path != save_path:
             mp4_path.unlink(missing_ok=True)
 

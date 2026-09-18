@@ -1,4 +1,4 @@
-"""MoveMatch perception -- ports the methods from test.ipynb.
+"""MoveMatch perception -- the VSS path.
 
 VSS path: dense VLM captions from the RTVLM (``/generate_vlm_captions`` at :8100)
 give a timestamped, per-person timeline; a text NIM (``/v1/chat/completions`` at
@@ -26,12 +26,12 @@ import requests
 
 log = logging.getLogger(__name__)
 
-# -- Endpoints (same env contract as the notebook) ----------------------------
+# -- Endpoints ----------------------------------------------------------------
 RTVLM = os.environ.get("VSS_RTVLM_URL", "http://127.0.0.1:8100").rstrip("/")
 LLM = os.environ.get("VSS_LLM_URL", "http://127.0.0.1:38011").rstrip("/")
 
-# via-server container that holds the fused CV metadata JSON. Same container-copy
-# mechanism the notebook uses for the overlay video (no API, dir not mounted).
+# via-server container that holds the fused CV metadata JSON. Copied out with
+# docker cp because the directory is not mounted and there is no API for it.
 VIA_CONTAINER = os.environ.get(
     "VIA_CONTAINER", "local_deployment_single_gpu-via-server-1"
 )
@@ -39,9 +39,12 @@ VIA_CONTAINER = os.environ.get(
 _FUSED_GLOB = "/opt/nvidia/via/*_fused.json"
 
 CAPTION_PROMPT = (
-    "Each person has a number label drawn next to them. Write a dense caption "
-    "describing every action, pose, and dance move each person performs, always "
-    "referring to a person by the number shown next to them."
+    "Write a dense caption describing every action, pose, "
+    "and dance move each person performs, always "
+    "referring to a person by the ID drawn on them. "
+    "If no one has an ID drawn on them, do not describe the scene. "
+    "Do not give any overall picture. Only describe persons, "
+    "and the exact movement they are making. "
 )
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
@@ -62,7 +65,7 @@ def _list_fused() -> list[tuple[int, str]]:
     run's file by recency rather than by id."""
     out = subprocess.check_output(
         ["docker", "exec", VIA_CONTAINER, "sh", "-c",
-         f'for f in {_FUSED_GLOB}; do [ -e "$f" ] && stat -c "%Y %n" "$f"; done'],
+         f'for f in {_FUSED_GLOB}; do [ -e "$f" ] && stat -c "%Y %n" "$f"; done; exit 0'],
         text=True,
     )
     rows = []
@@ -146,8 +149,7 @@ def first_performer(captions, moves):
     prompt = (
         "You are given timestamped video captions. Each person has a fixed ID "
         "number (shown in the captions, e.g. 'Person 0', 'Person 3') that stays "
-        "the same across time. The numbers are arbitrary tracker labels, NOT "
-        "left-to-right order.\n\n"
+        "the same across time.\n\n"
         f"TIMELINE:\n{timeline}\n\n"
         f"Find the FIRST person (earliest timestamp) to {task}.\n"
         "Answer with ONLY JSON, no prose:\n"
