@@ -179,7 +179,7 @@ The notebook talks to a **VSS** backend over HTTP (`caption_video` → `/generat
   CPU-only infra containers: **neo4j** (graph DB), **milvus** (vector DB), **arango**, **minio**,
   **elasticsearch**.
 - The VLM and the CA-RAG models run as **separate external NIM containers**, reached over
-  `host.docker.internal`. They are *not* part of the compose file.
+  `host.docker.internal`. They are *not* part of the compose file and must be deployed independently (more info on https://build.nvidia.com/nvidia/cosmos3-nano-reasoner/deploy, but use NIM_CACHE_PATH, the right free port coherent with config.yaml and the right gpu written as '"device=0"').
 
 ## Models on the text / CA-RAG side (`config.yaml`)
 
@@ -251,5 +251,5 @@ CPU-only containers: neo4j · milvus · arango · minio · elasticsearch
 ```
 
 The cosmos NIM is memory-capped with `NIM_GPU_MEMORY_UTILIZATION=0.50` specifically to leave
-headroom on GPU 1 for the CV pipeline's TensorRT engine builds and inference.
+headroom on GPU 1 for the CV pipeline's TensorRT engine builds and inference. This might be optimized to give more free RAM to the cache of cosmos3 at its startup.
 
