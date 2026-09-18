@@ -1,4 +1,4 @@
-"""MoveMatch perception -- ports the methods from test.ipynb.
+"""MoveMatch perception -- the VSS path.
 
 VSS path: dense VLM captions from the RTVLM (``/generate_vlm_captions`` at :8100)
 give a timestamped, per-person timeline; a text NIM (``/v1/chat/completions`` at
@@ -26,12 +26,12 @@ import requests
 
 log = logging.getLogger(__name__)
 
-# -- Endpoints (same env contract as the notebook) ----------------------------
+# -- Endpoints ----------------------------------------------------------------
 RTVLM = os.environ.get("VSS_RTVLM_URL", "http://127.0.0.1:8100").rstrip("/")
 LLM = os.environ.get("VSS_LLM_URL", "http://127.0.0.1:38011").rstrip("/")
 
-# via-server container that holds the fused CV metadata JSON. Same container-copy
-# mechanism the notebook uses for the overlay video (no API, dir not mounted).
+# via-server container that holds the fused CV metadata JSON. Copied out with
+# docker cp because the directory is not mounted and there is no API for it.
 VIA_CONTAINER = os.environ.get(
     "VIA_CONTAINER", "local_deployment_single_gpu-via-server-1"
 )

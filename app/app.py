@@ -1,9 +1,8 @@
 """MoveMatch -- Flask orchestrator.
 
 Generates a random challenge, routes the uploaded/recorded clip through the VSS
-perception path (VLM captions + text-NIM reasoning, see vss.py), with a
-deterministic pose fallback, and stores the winner (plus a boxed snapshot) for
-the leaderboard.
+perception path (VLM captions + text-NIM reasoning, see vss.py), and stores the
+winner (plus a boxed snapshot) for the leaderboard.
 """
 
 import json
@@ -137,7 +136,7 @@ def clamp_int(value, lo: int, hi: int, default: int) -> int:
 def ensure_mp4(src: Path) -> Path:
     """Re-encode to H.264/AAC MP4 so the VSS uploader accepts it."""
     dst = src.with_name(src.stem + "_vst.mp4")
-    subprocess.run(
+    proc = subprocess.run(
         [
             "ffmpeg", "-y", "-i", str(src),
             "-c:v", "libx264",
@@ -151,9 +150,15 @@ def ensure_mp4(src: Path) -> Path:
             "-movflags", "+faststart",
             str(dst),
         ],
-        check=True,
         capture_output=True,
+        text=True,
     )
+    if proc.returncode != 0:
+        tail = "\n".join(proc.stderr.strip().splitlines()[-15:])
+        raise RuntimeError(
+            f"ffmpeg failed (exit {proc.returncode}) transcoding {src.name}. "
+            f"The recording may have no video stream or be truncated.\n{tail}"
+        )
     return dst
 
 
