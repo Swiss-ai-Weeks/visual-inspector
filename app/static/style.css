@@ -742,6 +742,19 @@ body {
   font-weight: 800;
 }
 
+.winner-photo {
+  margin-top: 16px;
+}
+
+.winner-photo img {
+  width: 100%;
+  max-width: 520px;
+  border-radius: 14px;
+  border: 2px solid rgba(16,185,129,.5);
+  display: block;
+  margin: 0 auto;
+}
+
 .no-winner-banner {
   margin-top: 24px;
   padding: 16px;

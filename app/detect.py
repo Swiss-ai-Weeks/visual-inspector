@@ -93,6 +93,12 @@ def _pose(frame: np.ndarray) -> list[dict]:
             "cx": (bx + bw / 2 - px) / r,
             "box_conf": scores[i],
             "kp": kpsets[i],
+            "box": (
+                (bx - px) / r,
+                (by - py) / r,
+                (bx + bw - px) / r,
+                (by + bh - py) / r,
+            ),
         })
     return people
 
@@ -239,3 +245,70 @@ def _segments(
             ))
         i = j
     return events
+
+
+def winner_snapshot(
+    video_path: str,
+    player_id: int,
+    out_path: str,
+    label: str | None = None,
+    dt: float = 0.3,
+) -> bool:
+    """Save a frame with the winning player boxed. Returns True on success.
+
+    Picks the frame where the video sees its usual number of players and the
+    target player (by left->right rank) is most confidently detected.
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return False
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    step = max(1, round(fps * dt))
+
+    samples: list[tuple[int, list[dict]]] = []
+    idx = 0
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        if idx % step == 0:
+            people = _pose(frame)
+            if people:
+                samples.append((idx, people))
+        idx += 1
+
+    if not samples:
+        cap.release()
+        return False
+
+    num_players = Counter(len(p) for _, p in samples).most_common(1)[0][0]
+
+    best = None  # (box_conf, frame_idx, box)
+    for fidx, people in samples:
+        if len(people) < player_id:
+            continue
+        ordered = sorted(people, key=lambda d: d["cx"])
+        target = ordered[player_id - 1]
+        if len(people) == num_players and (best is None or target["box_conf"] > best[0]):
+            best = (target["box_conf"], fidx, target["box"])
+    if best is None:
+        cap.release()
+        return False
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, best[1])
+    ok, frame = cap.read()
+    cap.release()
+    if not ok:
+        return False
+
+    x1, y1, x2, y2 = (int(round(v)) for v in best[2])
+    green = (0, 220, 0)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), green, 3)
+    tag = label or f"Player {player_id}"
+    (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+    ty = max(y1, th + 12)
+    cv2.rectangle(frame, (x1, ty - th - 10), (x1 + tw + 12, ty + 4), green, -1)
+    cv2.putText(frame, tag, (x1 + 6, ty - 4),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2, cv2.LINE_AA)
+
+    return bool(cv2.imwrite(out_path, frame))

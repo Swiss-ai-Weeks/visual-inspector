@@ -27,7 +27,7 @@ from models import (
     GameResult,
     PlayerResult,
 )
-from detect import extract_events
+from detect import extract_events, winner_snapshot
 from validator import validate
 
 log = logging.getLogger(__name__)
@@ -35,6 +35,8 @@ log = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
+SNAPSHOT_DIR = BASE_DIR / "static" / "snapshots"
+SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = BASE_DIR / "movematch.db"
 
 ALLOWED_EXT = {"mp4", "mov", "avi", "mkv", "webm"}
@@ -156,12 +158,22 @@ def run_pipeline(
 
     winner = next((p for p in players if p.passed), None)
 
+    winner_image = None
+    if winner:
+        fname = f"{uuid.uuid4().hex}.jpg"
+        try:
+            if winner_snapshot(video_path, winner.player_id, str(SNAPSHOT_DIR / fname), label=winner.name):
+                winner_image = fname
+        except Exception:
+            log.warning("Winner snapshot failed", exc_info=True)
+
     return GameResult(
         expected=expected,
         players=players,
         winner=winner,
         raw_events=events,
         adjudicated=False,
+        winner_image=winner_image,
     )
 
 

@@ -8,8 +8,7 @@ ACTION_VOCAB = [
     "hands_on_head",
     "crouch",
     "jump",
-    "raise_left_arm",
-    "raise_right_arm",
+    "raise_one_arm",
     "turn_around",
     "idle",
 ]
@@ -21,8 +20,7 @@ ACTION_EMOJIS = {
     "hands_on_head": "\U0001f646",
     "crouch": "\U0001f9ce",
     "jump": "\U0001f3c3",
-    "raise_left_arm": "\U0001f91a",
-    "raise_right_arm": "✋",
+    "raise_one_arm": "\U0001f91a",
     "turn_around": "\U0001f504",
     "idle": "\U0001f9cd",
 }
@@ -55,3 +53,4 @@ class GameResult:
     winner: PlayerResult | None = None
     raw_events: list[ActionEvent] = field(default_factory=list)
     adjudicated: bool = False
+    winner_image: str | None = None
