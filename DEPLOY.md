@@ -92,10 +92,13 @@ The NIM images live on `nvcr.io`. Authenticate with your NGC key (username is th
 echo "$NGC_API_KEY" | docker login nvcr.io --username '$oauthtoken' --password-stdin
 ```
 
-All four NIMs share one weights cache on the host so re-launches are fast:
+All four NIMs share one weights cache on the host so re-launches are fast. Set up the cache
+path once and reuse it in every `docker run` below:
 
 ```bash
-mkdir -p ~/.cache/nim
+export NIM_CACHE_PATH="${LOCAL_NIM_CACHE:-$HOME/.cache/nim}"
+mkdir -p "$NIM_CACHE_PATH"
+chmod 0775 "$NIM_CACHE_PATH"
 ```
 
 ---
@@ -115,14 +118,15 @@ Find each model on **build.nvidia.com** (search the name) — the model page lin
 > Ports are not arbitrary: `config.yaml` expects the LLM/embed/rerank on **8007 / 8006 / 8005**,
 > and `.env` points the VLM at **38011**. Keep them.
 
-Make sure `NGC_API_KEY` is exported in your shell first (`source .env` or export it), then:
+Make sure `NGC_API_KEY` and `NIM_CACHE_PATH` are exported in your shell first (`source .env` /
+export the key, and set `NIM_CACHE_PATH` as in step 4), then:
 
 ### 5a. LLM — nemotron-3.5-lightning (GPU 0, :8007)
 
 ```bash
 docker run -d --name nemotron-llm --runtime=nvidia --gpus '"device=0"' \
   --shm-size=16g -e NGC_API_KEY \
-  -v ~/.cache/nim:/opt/nim/.cache \
+  -v "$NIM_CACHE_PATH":/opt/nim/.cache \
   -p 8007:8000 \
   nvcr.io/nim/nvidia/nemotron-3.5-lightning-30b-a3b:latest
 ```
@@ -132,7 +136,7 @@ docker run -d --name nemotron-llm --runtime=nvidia --gpus '"device=0"' \
 ```bash
 docker run -d --name nemotron-embed --runtime=nvidia --gpus '"device=0"' \
   --shm-size=16g -e NGC_API_KEY \
-  -v ~/.cache/nim:/opt/nim/.cache \
+  -v "$NIM_CACHE_PATH":/opt/nim/.cache \
   -p 8006:8000 \
   nvcr.io/nim/nvidia/llama-nemotron-embed-vl-1b-v2:1.12.0
 ```
@@ -142,7 +146,7 @@ docker run -d --name nemotron-embed --runtime=nvidia --gpus '"device=0"' \
 ```bash
 docker run -d --name nemotron-rerank --runtime=nvidia --gpus '"device=0"' \
   --shm-size=16g -e NGC_API_KEY \
-  -v ~/.cache/nim:/opt/nim/.cache \
+  -v "$NIM_CACHE_PATH":/opt/nim/.cache \
   -p 8005:8000 \
   nvcr.io/nim/nvidia/llama-nemotron-rerank-vl-1b-v2:latest
 ```
@@ -157,7 +161,7 @@ docker run -d --name cosmos3-reasoner --runtime=nvidia --gpus '"device=1"' \
   --shm-size=32g -e NGC_API_KEY \
   -e NIM_GPU_MEMORY_UTILIZATION=0.50 \
   -e NIM_MAX_MODEL_LEN=32768 \
-  -v ~/.cache/nim:/opt/nim/.cache \
+  -v "$NIM_CACHE_PATH":/opt/nim/.cache \
   -p 38011:8000 \
   nvcr.io/nim/nvidia/cosmos3-reasoner:latest
 ```
