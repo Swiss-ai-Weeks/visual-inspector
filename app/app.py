@@ -181,7 +181,7 @@ def run_pipeline(video_path: str, moves: list[str], player_names: list[str]) -> 
     winner_image = None
     meta_path = None
     try:
-        meta_path = fetch_cv_metadata(res["request_id"])
+        meta_path = fetch_cv_metadata(res["cv_marker"])
         ranks, n_meta = start_order(meta_path)
         num_people = n_meta or num_people
         winner_number = ranks.get(winner_id, -1) + 1  # 1-based start rank; 0 if absent

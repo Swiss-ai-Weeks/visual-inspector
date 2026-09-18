@@ -36,6 +36,8 @@ VIA_CONTAINER = os.environ.get(
     "VIA_CONTAINER", "local_deployment_single_gpu-via-server-1"
 )
 
+_FUSED_GLOB = "/opt/nvidia/via/*_fused.json"
+
 CAPTION_PROMPT = (
     "Each person has a number label drawn next to them. Write a dense caption "
     "describing every action, pose, and dance move each person performs, always "
@@ -53,8 +55,28 @@ def _first_model(url: str, path: str) -> str:
     return requests.get(f"{url}{path}", timeout=15).json()["data"][0]["id"]
 
 
+def _list_fused() -> list[tuple[int, str]]:
+    """(mtime_epoch, remote_path) for every fused CV metadata JSON in the
+    container, ascending by mtime. The CV pipeline names these with its own
+    internal request id (NOT the caption API's response id), so we locate this
+    run's file by recency rather than by id."""
+    out = subprocess.check_output(
+        ["docker", "exec", VIA_CONTAINER, "sh", "-c",
+         f'for f in {_FUSED_GLOB}; do [ -e "$f" ] && stat -c "%Y %n" "$f"; done'],
+        text=True,
+    )
+    rows = []
+    for line in out.splitlines():
+        line = line.strip()
+        if line:
+            mt, path = line.split(" ", 1)
+            rows.append((int(mt), path))
+    rows.sort()
+    return rows
+
+
 def caption_video(path, chunk_duration: int = 2, chunk_overlap_duration: int = 1):
-    """Upload a clip and densely caption it. Returns ``(captions, request_id)``
+    """Upload a clip and densely caption it. Returns ``(captions, cv_marker)``
     where captions is ordered ``[(start, end, text)]``.
 
     chunk_duration is the game's TEMPORAL RESOLUTION: each chunk yields one
@@ -64,10 +86,12 @@ def caption_video(path, chunk_duration: int = 2, chunk_overlap_duration: int = 1
 
     enable_cv_metadata runs the CV pipeline (GroundingDINO + NvDCF tracker) and
     overlays stable tracking IDs onto the frames the VLM sees (Set-of-Marks), so
-    the numbering persists across chunks. request_id lets us fetch that run's
-    fused CV metadata JSON out of the container.
+    the numbering persists across chunks. cv_marker is the newest fused-file mtime
+    BEFORE this run, so fetch_cv_metadata can pick out the file this run created.
     """
     path = Path(path)
+    fused_before = _list_fused()
+    cv_marker = fused_before[-1][0] if fused_before else 0
     with path.open("rb") as f:
         file_id = requests.post(
             f"{RTVLM}/files",
@@ -93,13 +117,12 @@ def caption_video(path, chunk_duration: int = 2, chunk_overlap_duration: int = 1
     finally:
         requests.delete(f"{RTVLM}/files/{file_id}", timeout=30)
 
-    request_id = resp.get("id")
     caps = [
         (float(c["start_time"]), float(c["end_time"]),
          _THINK.sub("", c["content"]).strip())
         for c in resp["chunk_responses"]
     ]
-    return sorted(caps, key=lambda c: c[0]), request_id
+    return sorted(caps, key=lambda c: c[0]), cv_marker
 
 
 def first_performer(captions, moves):
@@ -164,17 +187,22 @@ def first_performer(captions, moves):
 # CV metadata -- fetch the fused tracker JSON and box the winner by tracker id
 # =============================================================================
 
-def fetch_cv_metadata(request_id: str, out_path: str | None = None) -> str:
+def fetch_cv_metadata(cv_marker: int, out_path: str | None = None) -> str:
     """Copy this run's fused CV metadata JSON out of the via-server container.
 
-    Named ``{request_id}_fused.json`` in /opt/nvidia/via inside the container.
-    Fetching by exact request_id (not "newest") is race-safe across workers.
+    The CV pipeline names fused files with its own internal id (not the caption
+    API's response id), so we pick the newest fused file created AFTER cv_marker
+    (the newest-file mtime captured before the caption call). Falls back to the
+    newest file overall if none is strictly newer.
     """
-    if not request_id:
-        raise RuntimeError("No request_id -- caption_video must run with CV enabled.")
-    out_path = out_path or f"/tmp/cv_metadata_{request_id}.json"
-    remote = f"{VIA_CONTAINER}:/opt/nvidia/via/{request_id}_fused.json"
-    subprocess.check_call(["docker", "cp", remote, out_path])
+    rows = _list_fused()
+    if not rows:
+        raise RuntimeError("No fused CV metadata JSON in the container.")
+    newer = [r for r in rows if r[0] > cv_marker]
+    remote_path = (newer or rows)[-1][1]
+    out_path = out_path or f"/tmp/cv_metadata_{os.path.basename(remote_path)}"
+    subprocess.check_call(
+        ["docker", "cp", f"{VIA_CONTAINER}:{remote_path}", out_path])
     return out_path
 
 
@@ -250,14 +278,14 @@ def find_winner(video_path, moves, chunk_duration: int = 2,
     Runs the VSS path: VLM captions (with CV tracking) + text-NIM reasoning over
     the timeline. Returns a dict with keys
     ``winner`` (tracker id, -1 if nobody), ``timestamp``, ``num_people``,
-    ``request_id``, ``method``, ``timeline``.
+    ``cv_marker``, ``method``, ``timeline``.
     """
     target = moves[0] if isinstance(moves, (list, tuple)) and len(moves) == 1 else moves
-    captions, request_id = caption_video(
+    captions, cv_marker = caption_video(
         video_path, chunk_duration=chunk_duration,
         chunk_overlap_duration=chunk_overlap_duration)
     res = first_performer(captions, target)
-    res["request_id"] = request_id
+    res["cv_marker"] = cv_marker
     res["timeline"] = captions
     res["method"] = "vss"
     return res
