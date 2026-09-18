@@ -14,6 +14,22 @@
 
   <form method="POST" enctype="multipart/form-data" id="test-form">
     <input type="hidden" name="moves_json" id="moves_json" value="[]">
+    <input type="hidden" name="pipeline" id="pipeline" value="{{ pipeline }}">
+
+    <!-- Pipeline toggle -->
+    <div class="field-group">
+      <label class="field-label">Detection pipeline</label>
+      <div class="mode-toggle">
+        <button type="button" class="mode-btn {{ 'active' if pipeline != 'yolo' }}"
+                id="btn-vss" onclick="setPipeline('vss')">🧠 VSS (captions)</button>
+        <button type="button" class="mode-btn {{ 'active' if pipeline == 'yolo' }}"
+                id="btn-yolo" onclick="setPipeline('yolo')">🦴 YOLO (pose)</button>
+      </div>
+      <p class="upload-hint" id="yolo-note" style="{{ '' if pipeline == 'yolo' else 'display:none' }}">
+        YOLO detects: cross your arms, raise one arm, hands on head, crouch down,
+        clap your hands, touch your head, wave, point at the camera, touch your knee.
+      </p>
+    </div>
 
     <!-- Movement builder -->
     <div class="field-group">
@@ -67,6 +83,13 @@
 
 <script>
 let moves = {{ (result.moves if result else []) | tojson | safe }};
+
+function setPipeline(p) {
+  document.getElementById('pipeline').value = p;
+  document.getElementById('btn-vss').classList.toggle('active', p === 'vss');
+  document.getElementById('btn-yolo').classList.toggle('active', p === 'yolo');
+  document.getElementById('yolo-note').style.display = p === 'yolo' ? '' : 'none';
+}
 
 const preview  = document.getElementById('seq-preview');
 const emptyMsg = document.getElementById('seq-empty');

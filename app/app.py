@@ -21,6 +21,10 @@ from werkzeug.utils import secure_filename
 
 from models import MOVE_POOL, GameResult, move_emoji
 from vss import find_winner, fetch_cv_metadata, start_order, winner_snapshot_cv
+from yolo import find_winner_yolo, supported as yolo_supported
+from yolo import winner_snapshot as yolo_winner_snapshot
+
+PIPELINES = {"vss", "yolo"}
 
 log = logging.getLogger(__name__)
 
@@ -169,13 +173,63 @@ def ensure_mp4(src: Path) -> Path:
     return dst
 
 
-def run_pipeline(video_path: str, moves: list[str], player_names: list[str]) -> GameResult:
+def _name_for(player_names: list[str], number: int, fallback: str) -> str | None:
+    """Typed name for the 1-based left-to-right slot ``number`` (fallback if none)."""
+    idx = number - 1
+    if number and 0 <= idx < len(player_names) and player_names[idx].strip():
+        return player_names[idx].strip()
+    if number:
+        return f"Person {number}"
+    return fallback
+
+
+def run_pipeline_yolo(video_path: str, moves: list[str],
+                      player_names: list[str]) -> GameResult:
+    """YOLO perception -> winner (left-to-right column), named + boxed from pose.
+
+    Pose-based sequence detection returns the winner as a 1-based left-to-right
+    column (starting position), so it maps straight onto the typed player names
+    and onto the YOLOX person box -- no CV metadata / container round-trip.
+    """
+    res = find_winner_yolo(video_path, moves)
+    winner_number = int(res.get("winner", -1))
+    timestamp = res.get("timestamp")
+    num_people = int(res.get("num_people") or 0)
+
+    if timestamp is None or winner_number < 1:
+        return GameResult(
+            moves=moves, winner_number=0, winner_name=None, timestamp=None,
+            num_people=num_people, method="yolo", winner_image=None, timeline=[],
+        )
+
+    winner_name = _name_for(player_names, winner_number, f"Person {winner_number}")
+    winner_image = None
+    try:
+        fname = f"{uuid.uuid4().hex}.jpg"
+        yolo_winner_snapshot(video_path, timestamp, winner_number, num_people,
+                             SNAPSHOT_DIR / fname)
+        winner_image = fname
+    except Exception:
+        log.warning("YOLO winner snapshot failed", exc_info=True)
+
+    return GameResult(
+        moves=moves, winner_number=winner_number, winner_name=winner_name,
+        timestamp=timestamp, num_people=num_people, method="yolo",
+        winner_image=winner_image, timeline=[],
+    )
+
+
+def run_pipeline(video_path: str, moves: list[str], player_names: list[str],
+                 pipeline: str = "vss") -> GameResult:
     """VSS perception -> winner (tracker id), named + boxed from CV metadata.
 
     The winner comes back as a stable tracker id. We map it to a typed name by
     STARTING position (people ordered left-to-right by their first-seen bbox), and
     box it straight from the tracker's own bbox so the box matches the caption.
     """
+    if pipeline == "yolo":
+        return run_pipeline_yolo(video_path, moves, player_names)
+
     res = find_winner(video_path, moves, chunk_duration=CHUNK_DURATION,
                       chunk_overlap_duration=CHUNK_OVERLAP)
 
@@ -259,7 +313,7 @@ def save_game(result: GameResult) -> None:
     db.commit()
 
 
-def process_upload(moves: list[str], player_names: list[str]):
+def process_upload(moves: list[str], player_names: list[str], pipeline: str = "vss"):
     """Shared POST handling: validate file, transcode, run pipeline, persist.
 
     Returns (result, error_message). Exactly one is non-None.
@@ -278,7 +332,7 @@ def process_upload(moves: list[str], player_names: list[str]):
     keep = os.environ.get("KEEP_UPLOADS", "0") == "1"
     try:
         mp4_path = ensure_mp4(save_path)
-        result = run_pipeline(str(mp4_path), moves, player_names)
+        result = run_pipeline(str(mp4_path), moves, player_names, pipeline)
         save_game(result)
         return result, None
     except Exception as exc:
@@ -297,6 +351,11 @@ def parse_names(csv: str) -> list[str]:
     return [n.strip() for n in csv.split(",") if n.strip()]
 
 
+def parse_pipeline(source) -> str:
+    p = (source.get("pipeline") or "vss").lower()
+    return p if p in PIPELINES else "vss"
+
+
 # -- Routes -------------------------------------------------------------------
 
 @app.route("/", methods=["GET", "POST"])
@@ -305,6 +364,7 @@ def index():
     source = request.form if request.method == "POST" else request.args
     difficulty = clamp_int(source.get("difficulty"), MIN_DIFFICULTY, MAX_DIFFICULTY, DEFAULT_DIFFICULTY)
     record_seconds = clamp_int(source.get("time"), MIN_SECONDS, MAX_SECONDS, DEFAULT_SECONDS)
+    pipeline = parse_pipeline(source)
     challenge = generate_challenge(difficulty)
 
     if request.method == "POST":
@@ -318,7 +378,7 @@ def index():
                 pass
 
         player_names = parse_names(request.form.get("player_names", ""))
-        result, error = process_upload(challenge, player_names)
+        result, error = process_upload(challenge, player_names, pipeline)
         if error:
             flash(error, "error")
 
@@ -328,6 +388,7 @@ def index():
         challenge_json=json.dumps(challenge),
         difficulty=difficulty,
         record_seconds=record_seconds,
+        pipeline=pipeline,
         min_difficulty=MIN_DIFFICULTY,
         max_difficulty=MAX_DIFFICULTY,
         min_seconds=MIN_SECONDS,
@@ -376,6 +437,7 @@ def leaderboard():
 @app.route("/test", methods=["GET", "POST"])
 def test_page():
     result: GameResult | None = None
+    pipeline = parse_pipeline(request.values)
 
     if request.method == "POST":
         try:
@@ -384,15 +446,24 @@ def test_page():
             moves = []
         moves = [str(m).strip() for m in moves if str(m).strip()]
 
+        unsupported = [m for m in moves if pipeline == "yolo" and not yolo_supported(m)]
         if not moves:
             flash("Write at least one movement.", "error")
+        elif unsupported:
+            flash(
+                "YOLO can only detect these moves: cross your arms, raise one arm, "
+                "put your hands on your head, crouch down, clap your hands, touch "
+                "your head, wave, point at the camera, touch your knee. "
+                f"Unsupported: {', '.join(unsupported)}",
+                "error",
+            )
         else:
             player_names = parse_names(request.form.get("player_names", ""))
-            result, error = process_upload(moves, player_names)
+            result, error = process_upload(moves, player_names, pipeline)
             if error:
                 flash(error, "error")
 
-    return render_template("test.html", result=result)
+    return render_template("test.html", result=result, pipeline=pipeline)
 
 
 @app.route("/api/challenge", methods=["POST"])

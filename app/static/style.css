@@ -1105,7 +1105,8 @@ body {
   font-weight: 700;
 }
 .method-tag.vss  { color: var(--accent);  background: var(--accent-dim); }
-.method-tag.pose { color: var(--success); background: rgba(16,185,129,.18); }
+.method-tag.pose,
+.method-tag.yolo { color: var(--success); background: rgba(16,185,129,.18); }
 
 /* ── Winner gallery (leaderboard) ── */
 .winner-gallery {

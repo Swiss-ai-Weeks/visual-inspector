@@ -27,6 +27,18 @@
 <div class="form-card">
   <form method="POST" enctype="multipart/form-data" id="form">
     <input type="hidden" name="challenge_json" id="challenge_json" value='{{ challenge_json }}'>
+    <input type="hidden" name="pipeline" id="pipeline" value="{{ pipeline }}">
+
+    <!-- Pipeline toggle -->
+    <div class="field-group">
+      <label class="field-label">Detection pipeline</label>
+      <div class="mode-toggle">
+        <button type="button" class="mode-btn {{ 'active' if pipeline != 'yolo' }}"
+                id="btn-vss" onclick="setPipeline('vss')">🧠 VSS (captions)</button>
+        <button type="button" class="mode-btn {{ 'active' if pipeline == 'yolo' }}"
+                id="btn-yolo" onclick="setPipeline('yolo')">🦴 YOLO (pose)</button>
+      </div>
+    </div>
 
     <!-- Mode toggle -->
     <div class="mode-toggle">
@@ -111,7 +123,7 @@
 <div class="loading-overlay" id="loading">
   <div class="spinner-ring"></div>
   <p class="loading-text">Analyzing your video&hellip;</p>
-  <p class="loading-sub">Captioning with VSS &middot; reasoning over the timeline &middot; boxing the winner.</p>
+  <p class="loading-sub">Detecting the moves &middot; timing each player &middot; boxing the winner.</p>
 </div>
 
 <script>
@@ -125,8 +137,17 @@ const timeValue  = document.getElementById('time-value');
 
 function currentSeconds() { return +timeSlider.value; }
 
+function currentPipeline() { return document.getElementById('pipeline').value; }
+
 function reloadWith(difficulty, time) {
-  location.href = '{{ url_prefix }}/?difficulty=' + difficulty + '&time=' + time + '&_=' + Date.now();
+  location.href = '{{ url_prefix }}/?difficulty=' + difficulty + '&time=' + time +
+                  '&pipeline=' + currentPipeline() + '&_=' + Date.now();
+}
+
+function setPipeline(p) {
+  document.getElementById('pipeline').value = p;
+  document.getElementById('btn-vss').classList.toggle('active', p === 'vss');
+  document.getElementById('btn-yolo').classList.toggle('active', p === 'yolo');
 }
 
 diffSlider.addEventListener('input', () => { diffValue.textContent = diffSlider.value; });
