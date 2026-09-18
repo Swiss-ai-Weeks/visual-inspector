@@ -466,7 +466,9 @@ def test_page():
 @app.route("/api/challenge", methods=["POST"])
 def api_new_challenge():
     difficulty = clamp_int(request.values.get("difficulty"), MIN_DIFFICULTY, MAX_DIFFICULTY, DEFAULT_DIFFICULTY)
-    return json.dumps(generate_challenge(difficulty)), 200, {"Content-Type": "application/json"}
+    moves = generate_challenge(difficulty)
+    payload = {"moves": [{"name": m, "emoji": move_emoji(m)} for m in moves]}
+    return json.dumps(payload), 200, {"Content-Type": "application/json"}
 
 
 @app.errorhandler(413)

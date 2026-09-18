@@ -2,51 +2,47 @@
 
 {% block content %}
 
-<!-- Challenge card -->
-<div class="challenge-card" id="challenge-card">
-  <div id="challenge-normal" style="display:none">
-    <p class="challenge-label">Your challenge &mdash; who does it first?</p>
-    <div class="sequence-display">
-      {% for move in challenge %}
-        {% if not loop.first %}<span class="seq-arrow">&rarr;</span>{% endif %}
-        <span class="seq-step">
-          <span class="seq-emoji">{{ move_emoji(move) }}</span>
-          <span class="seq-name">{{ move }}</span>
-        </span>
-      {% endfor %}
-    </div>
-    <button type="button" class="clear-btn" id="reroll">🎲 New challenge</button>
-  </div>
-  <div id="challenge-mystery">
-    <p class="challenge-label">Camera Challenge</p>
-    <span class="challenge-emoji" style="font-size:64px">🎲</span>
-    <p class="challenge-text">Press Start Recording to reveal!</p>
-  </div>
-</div>
-
 <div class="form-card">
   <form method="POST" enctype="multipart/form-data" id="form">
     <input type="hidden" name="challenge_json" id="challenge_json" value='{{ challenge_json }}'>
     <input type="hidden" name="method" id="method" value="{{ method }}">
 
-    <!-- Detector toggle -->
-    <div class="mode-toggle method-toggle">
-      <button type="button" class="mode-btn {{ 'active' if method == 'yolo' }}" id="btn-yolo" onclick="setMethod('yolo')">
-        🤸 YOLO pose
-      </button>
-      <button type="button" class="mode-btn {{ 'active' if method == 'vss' }}" id="btn-vss" onclick="setMethod('vss')">
-        🧠 VSS
-      </button>
+    <!-- Compact toggles -->
+    <div class="toggle-row">
+      <!-- Detector toggle -->
+      <div class="mode-toggle method-toggle">
+        <button type="button" class="mode-btn {{ 'active' if method == 'yolo' }}" id="btn-yolo" onclick="setMethod('yolo')">
+          🤸 YOLO
+        </button>
+        <button type="button" class="mode-btn {{ 'active' if method == 'vss' }}" id="btn-vss" onclick="setMethod('vss')">
+          🧠 VSS
+        </button>
+      </div>
+
+      <!-- Mode toggle -->
+      <div class="mode-toggle">
+        <button type="button" class="mode-btn active" id="btn-record" onclick="setMode('record')">
+          📷 Camera
+        </button>
+        <button type="button" class="mode-btn" id="btn-upload" onclick="setMode('upload')">
+          🎬 File
+        </button>
+      </div>
     </div>
 
-    <!-- Mode toggle -->
-    <div class="mode-toggle">
-      <button type="button" class="mode-btn active" id="btn-record" onclick="setMode('record')">
-        📷 Use camera
-      </button>
-      <button type="button" class="mode-btn" id="btn-upload" onclick="setMode('upload')">
-        🎬 Upload file
-      </button>
+    <!-- Challenge (shown in file mode) -->
+    <div class="challenge-card compact" id="challenge-card" style="display:none">
+      <p class="challenge-label">Your challenge &mdash; who does it first?</p>
+      <div class="sequence-display compact" id="sequence-display">
+        {% for move in challenge %}
+          {% if not loop.first %}<span class="seq-arrow small">&rarr;</span>{% endif %}
+          <span class="seq-step">
+            <span class="seq-emoji">{{ move_emoji(move) }}</span>
+            <span class="seq-name">{{ move }}</span>
+          </span>
+        {% endfor %}
+      </div>
+      <button type="button" class="clear-btn" id="reroll">🎲 New challenge</button>
     </div>
 
     <!-- Player names -->
@@ -126,7 +122,7 @@
 </div>
 
 <script>
-const CHALLENGE = {{ challenge_json|safe }};
+let CHALLENGE = {{ challenge_json|safe }};
 
 /* -- Difficulty & time controls -- */
 const diffSlider = document.getElementById('difficulty');
@@ -150,9 +146,33 @@ timeSlider.addEventListener('input', () => {
   document.getElementById('countdown-num').textContent  = timeSlider.value;
 });
 
-/* -- Reroll challenge -- */
-document.getElementById('reroll').addEventListener('click', () => {
-  reloadWith(diffSlider.value, timeSlider.value);
+/* -- Reroll challenge (updates the sequence in place) -- */
+const seqDisplay = document.getElementById('sequence-display');
+const rerollBtn  = document.getElementById('reroll');
+
+function renderSequence(moves) {
+  seqDisplay.innerHTML = moves.map((m, i) =>
+    (i ? '<span class="seq-arrow small">&rarr;</span>' : '') +
+    `<span class="seq-step"><span class="seq-emoji">${m.emoji}</span>` +
+    `<span class="seq-name">${m.name}</span></span>`
+  ).join('');
+}
+
+rerollBtn.addEventListener('click', async () => {
+  rerollBtn.disabled = true;
+  try {
+    const res  = await fetch('{{ url_prefix }}/api/challenge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'difficulty=' + diffSlider.value,
+    });
+    const data = await res.json();
+    CHALLENGE  = data.moves.map(m => m.name);
+    document.getElementById('challenge_json').value = JSON.stringify(CHALLENGE);
+    renderSequence(data.moves);
+  } finally {
+    rerollBtn.disabled = false;
+  }
 });
 
 /* -- Upload mode -- */
@@ -196,9 +216,7 @@ function setMode(mode) {
   document.getElementById('record-section').style.display  = mode === 'record' ? '' : 'none';
   document.getElementById('btn-upload').classList.toggle('active', mode === 'upload');
   document.getElementById('btn-record').classList.toggle('active', mode === 'record');
-  document.getElementById('challenge-card').style.display    = mode === 'upload' ? '' : 'none';
-  document.getElementById('challenge-normal').style.display  = mode === 'upload' ? '' : 'none';
-  document.getElementById('challenge-mystery').style.display = 'none';
+  document.getElementById('challenge-card').style.display = mode === 'upload' ? '' : 'none';
   input.required = mode === 'upload';
   if (mode !== 'record') stopCamera();
 }

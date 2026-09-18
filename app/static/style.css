@@ -101,6 +101,14 @@ body {
   text-transform: capitalize;
 }
 
+/* Compact variant shown under the toggles in file mode. */
+.challenge-card.compact {
+  padding: 16px 18px;
+  border-radius: 14px;
+}
+.challenge-card.compact .challenge-label { margin-bottom: 10px; }
+.challenge-card.compact .clear-btn { margin-top: 12px; }
+
 /* Two-action vertical layout inside challenge card */
 .challenge-list {
   display: flex;
@@ -376,25 +384,31 @@ body {
 }
 
 /* ── Mode toggle ── */
-.mode-toggle {
+.toggle-row {
   display: flex;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 10px;
   margin-bottom: 20px;
+}
+
+.mode-toggle {
+  display: inline-flex;
+  gap: 3px;
   background: var(--surface2);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 5px;
+  border-radius: 999px;
+  padding: 3px;
 }
 
 .mode-btn {
-  flex: 1;
-  padding: 10px;
+  padding: 5px 12px;
   background: transparent;
   border: none;
-  border-radius: 8px;
+  border-radius: 999px;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
   transition: background .2s, color .2s;
 }
@@ -402,7 +416,7 @@ body {
 .mode-btn.active {
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 1px 6px rgba(0,0,0,.35);
+  box-shadow: 0 1px 4px rgba(0,0,0,.35);
 }
 
 .mode-btn:not(.active):hover { color: var(--text); }
