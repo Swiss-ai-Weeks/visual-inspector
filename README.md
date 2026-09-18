@@ -11,7 +11,7 @@ A camera records the players, and the app uses computer vision to determine **wh
 **1. Watch**
 The app displays a movement sequence.
 
-👏 → 🙆 → 👇 → 👏
+👏 → 🙆 → 👇
 
 **2. Perform**
 Players have **5 seconds** to reproduce it.
@@ -22,15 +22,15 @@ The AI detects and tracks each player, recognizes their movements, and reconstru
 **4. Verify**
 Expected:
 
-👏 → 🙆 → 👇 → 👏
+👏 → 🙆 → 👇
 
 Player:
 
-👏 → 🙆 → 👇 → 👏 ✅
+👏 → 🙆 → 👇 ✅
 
 or:
 
-👏 → 👇 → 🙆 → 👏 ❌
+👏 → 👇 → 🙆 ❌
 
 **5. Rank**
 The app shows success/failure and updates the leaderboard.
@@ -57,7 +57,7 @@ For every player, the system checks:
 
 Our goal is a working end-to-end local web app with:
 
-* 📹 Video upload
+* 📹 Video upload or live camera
 * 🎯 Movement sequence display
 * 👤 Multi-person detection & tracking
 * 🕺 Movement recognition
@@ -66,6 +66,8 @@ Our goal is a working end-to-end local web app with:
 * ✅ Success / failure results
 * 🏆 Player leaderboard
 * 💾 Local data storage
+* 📈 Difficulty levels
+
 
 ### MVP Flow
 
@@ -125,18 +127,17 @@ The underlying AI problem is the same: detect people, recognize actions, underst
 
 After the MVP:
 
-* 📷 Live camera gameplay
-* 📈 Difficulty levels
 * 🔊 Audio instructions and synchronization
 * ✋ Raise-hand player registration
 * 🏆 Tournament rounds / top 80% qualification
 * ⚡ Real-time movement validation
+* 👤 Face recognition to identify and name the winner
 
 ---
 
 ## 🔭 Beyond the Hackathon
 
-The same technology could be applied to **sports training, industrial procedures, education, rehabilitation, and workplace safety**.
+The same technology could be applied to **industrial procedures, workplace safety, sports training, education, and rehabilitation**.
 
 ### The Vision
 
