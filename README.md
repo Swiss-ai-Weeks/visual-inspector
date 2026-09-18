@@ -14,7 +14,7 @@ It started as a playful spin on the **Visual Compliance Inspector** challenge. I
 |------|--------------|
 | **1. Watch** | The app shows a movement sequence, e.g. 👏 → 🙆 → 👇 |
 | **2. Perform** | Players have a few seconds (**5–10 s**, set by difficulty) to reproduce it on camera |
-| **3. Analyze** | Every player is tracked with a stable ID; a vision model describes what each ID does over time |
+| **3. Analyze** | Every player is tracked left → right, and the app works out what each one does over time (local pose, or the VSS vision model) |
 | **4. Verify** | The app finds who completed the sequence **in the right order, first** |
 | **5. Rank** | It boxes the winner in a snapshot, shows the result, and updates the leaderboard |
 
@@ -27,13 +27,26 @@ Difficulty sets the number of moves in the sequence (1–5); players can also en
 
 ---
 
+## 🎛️ Two Ways to Decide the Winner
+
+At the top of the app there's a toggle to choose how the video is analyzed:
+
+| Mode | What it uses | Best for |
+|------|--------------|----------|
+| **🤸 YOLO pose** (default) | A small pose model that runs **locally on the CPU** — no server needed | Fast, reliable "who finished first". Works offline. Recognizes a fixed set of moves: cross arms, clap, hands on head, raise an arm, crouch, touch a knee, wave, point. |
+| **🧠 VSS** | The NVIDIA VSS backend (a vision-language model + reasoning) | Any move described in plain English — but slower, and less precise about *who was fastest*. |
+
+**Rule of thumb:** use **YOLO** for playing (quick, and good at ranking who was first); switch to **VSS** when you want moves that aren't in YOLO's list.
+
+---
+
 ## 🚀 Running It
 
-MoveMatch is a small Flask app (`app/`) that offloads all perception to a running **VSS backend** (see the **VSS Backend** section below). You need:
+MoveMatch is a small Flask app (`app/`). What it needs depends on the detector mode:
 
-- A **VSS backend** reachable at `:8100` (VLM captions) and a **text NIM** at `:38011` (reasoning) — see the deployment section below.
-- **Python ≥ 3.11** with the deps in `pyproject.toml` (`flask`, `gunicorn`, `requests`, `opencv-python`, `numpy`).
-- **ffmpeg** on `PATH` (clips are transcoded to H.264 MP4 before upload) and the **docker CLI** (the winner's CV metadata is copied out of the `via-server` container with `docker cp`).
+- **Always:** **Python ≥ 3.11** with the deps in `pyproject.toml` (`flask`, `gunicorn`, `requests`, `opencv-python`, `numpy`) and **ffmpeg** on `PATH` (clips are transcoded to H.264 MP4).
+- **YOLO mode only:** nothing extra — the pose model (~13 MB) auto-downloads to `models/yolov8n-pose.onnx` on first use and runs on the CPU.
+- **VSS mode only:** a **VSS backend** reachable at `:8100` (VLM captions) and a **text NIM** at `:38011` (reasoning), plus the **docker CLI** (the winner's CV metadata is copied out of the `via-server` container with `docker cp`). See the **VSS Backend** section below.
 
 Start the server:
 
@@ -53,9 +66,9 @@ cd app
 
 Pages:
 
-- `/` — **Play**: pick difficulty, get a random challenge, record/upload, see the result.
+- `/` — **Play**: pick the detector (YOLO/VSS), pick difficulty, get a random challenge, record/upload, see the result.
 - `/leaderboard` — win rankings and a gallery of boxed winner snapshots.
-- `/test` — **Free play**: type any moves as plain English and run the pipeline.
+- `/test` — **Free play**: type any moves as plain English and run the pipeline (VSS handles any move; YOLO only its fixed list).
 
 Results are stored locally in `app/movematch.db` (SQLite) and snapshots in `app/static/snapshots/`.
 
@@ -63,7 +76,22 @@ Results are stored locally in `app/movematch.db` (SQLite) and snapshots in `app/
 
 ## 🧠 How It Works
 
-The key challenge isn't detecting a person or a single pose — it's understanding **actions over time** and their **order**, per player. The pipeline:
+The key challenge isn't detecting a person or a single pose — it's understanding **actions over time** and their **order**, per player. There are two ways to do it.
+
+### 🤸 YOLO mode (local pose) — the simple, default path
+
+`app/yolo.py`, no server involved:
+
+1. Every few frames, a small **pose model** (YOLOv8n-pose) finds each person and their body points (shoulders, wrists, hips, knees…).
+2. People are lined up **left → right** and followed across the clip.
+3. Simple geometry checks the body points to name the move (e.g. wrists crossed at the chest = *arms crossed*).
+4. For each person the app checks the moves happened **in order**, and the **winner is whoever finished the last move first**. A still is saved at that exact moment with the winner boxed.
+
+Fast, runs on the CPU, and precise about timing — but it only knows the fixed list of moves above.
+
+### 🧠 VSS mode — describe-then-reason
+
+`app/vss.py`, using the VSS backend. A vision-language model *describes* the tracked video in words, then a text model *reasons* over those words to pick the winner. This handles any move phrased in plain English. The full pipeline:
 
 ```text
 Browser (record / upload)
@@ -92,6 +120,8 @@ For every player the system asks: did they perform the correct movements, in the
 ---
 
 ## 🔬 Technical Deep Dive
+
+> This deep dive covers **VSS mode**. YOLO mode is the simpler local path summarized above (`app/yolo.py`).
 
 How does the app decides **which person is the first to complete an ordered sequence of moves** and then produces a still image with that "winner" boxed ?
 
@@ -143,7 +173,13 @@ The winner box comes straight from the CV pipeline's own tracker output, so the 
 
 ### Models used
 
-The app itself loads **no local models** — all detection and tracking runs server-side inside the VSS `via-server` container:
+In **YOLO mode** the app loads one small model locally:
+
+| Component | Role |
+|-----------|------|
+| **YOLOv8n-pose** (`models/yolov8n-pose.onnx`, ~13 MB, via OpenCV `cv2.dnn`, CPU) | person detection + 17 body keypoints for the deterministic move timing |
+
+In **VSS mode** the app loads **no local models** — all detection and tracking runs server-side inside the VSS `via-server` container:
 
 | Component | Role |
 |-----------|------|

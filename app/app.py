@@ -19,6 +19,7 @@ from flask import Flask, render_template, request, flash, redirect, url_for, g
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename
 
+import yolo
 from models import MOVE_POOL, GameResult, move_emoji
 from vss import find_winner, fetch_cv_metadata, start_order, winner_snapshot_cv
 
@@ -38,6 +39,9 @@ CHUNK_OVERLAP = 0
 
 MIN_DIFFICULTY, MAX_DIFFICULTY, DEFAULT_DIFFICULTY = 1, 5, 3
 MIN_SECONDS, MAX_SECONDS, DEFAULT_SECONDS = 5, 10, 5
+
+METHODS = {"vss", "yolo"}
+DEFAULT_METHOD = "yolo"  # local pose is preferred for finding who moved first
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
@@ -169,7 +173,60 @@ def ensure_mp4(src: Path) -> Path:
     return dst
 
 
-def run_pipeline(video_path: str, moves: list[str], player_names: list[str]) -> GameResult:
+def run_pipeline(video_path: str, moves: list[str], player_names: list[str],
+                 method: str = DEFAULT_METHOD) -> tuple[GameResult, list[str]]:
+    """Dispatch to the chosen perception path.
+
+    Returns ``(result, unsupported_moves)``. ``unsupported_moves`` is only ever
+    non-empty for the YOLO path, which can classify a fixed gesture set rather
+    than arbitrary free text.
+    """
+    if method == "yolo":
+        return _run_yolo(video_path, moves, player_names)
+    return _run_vss(video_path, moves, player_names), []
+
+
+def _run_yolo(video_path: str, moves: list[str],
+              player_names: list[str]) -> tuple[GameResult, list[str]]:
+    """Local pose perception -> winner by left->right start rank, boxed from the
+    winner's own pose detection."""
+    res = yolo.find_winner(video_path, moves)
+    winner_rank = int(res.get("winner", -1))
+    timestamp = res.get("timestamp")
+    num_people = int(res.get("num_people") or 0)
+    unsupported = res.get("unsupported") or []
+
+    if timestamp is None or winner_rank < 0:
+        return GameResult(
+            moves=moves, winner_number=0, winner_name=None, timestamp=None,
+            num_people=num_people, method="yolo", winner_image=None,
+            timeline=res.get("timeline", []),
+        ), unsupported
+
+    winner_number = winner_rank + 1
+    if 0 <= winner_rank < len(player_names) and player_names[winner_rank].strip():
+        winner_name = player_names[winner_rank].strip()
+    else:
+        winner_name = f"Person {winner_number}"
+
+    winner_image = None
+    box = res.get("winner_box")
+    if box:
+        try:
+            fname = f"{uuid.uuid4().hex}.jpg"
+            yolo.winner_snapshot_yolo(video_path, timestamp, box, SNAPSHOT_DIR / fname)
+            winner_image = fname
+        except Exception:
+            log.warning("YOLO winner snapshot failed", exc_info=True)
+
+    return GameResult(
+        moves=moves, winner_number=winner_number, winner_name=winner_name,
+        timestamp=timestamp, num_people=num_people, method="yolo",
+        winner_image=winner_image, timeline=res.get("timeline", []),
+    ), unsupported
+
+
+def _run_vss(video_path: str, moves: list[str], player_names: list[str]) -> GameResult:
     """VSS perception -> winner (tracker id), named + boxed from CV metadata.
 
     The winner comes back as a stable tracker id. We map it to a typed name by
@@ -259,7 +316,8 @@ def save_game(result: GameResult) -> None:
     db.commit()
 
 
-def process_upload(moves: list[str], player_names: list[str]):
+def process_upload(moves: list[str], player_names: list[str],
+                   method: str = DEFAULT_METHOD):
     """Shared POST handling: validate file, transcode, run pipeline, persist.
 
     Returns (result, error_message). Exactly one is non-None.
@@ -278,7 +336,14 @@ def process_upload(moves: list[str], player_names: list[str]):
     keep = os.environ.get("KEEP_UPLOADS", "0") == "1"
     try:
         mp4_path = ensure_mp4(save_path)
-        result = run_pipeline(str(mp4_path), moves, player_names)
+        result, unsupported = run_pipeline(str(mp4_path), moves, player_names, method)
+        if unsupported:
+            flash(
+                "YOLO can't detect these moves: "
+                + ", ".join(unsupported)
+                + ". Switch to VSS for free-text moves.",
+                "error",
+            )
         save_game(result)
         return result, None
     except Exception as exc:
@@ -305,6 +370,7 @@ def index():
     source = request.form if request.method == "POST" else request.args
     difficulty = clamp_int(source.get("difficulty"), MIN_DIFFICULTY, MAX_DIFFICULTY, DEFAULT_DIFFICULTY)
     record_seconds = clamp_int(source.get("time"), MIN_SECONDS, MAX_SECONDS, DEFAULT_SECONDS)
+    method = source.get("method") if source.get("method") in METHODS else DEFAULT_METHOD
     challenge = generate_challenge(difficulty)
 
     if request.method == "POST":
@@ -318,7 +384,7 @@ def index():
                 pass
 
         player_names = parse_names(request.form.get("player_names", ""))
-        result, error = process_upload(challenge, player_names)
+        result, error = process_upload(challenge, player_names, method)
         if error:
             flash(error, "error")
 
@@ -332,6 +398,7 @@ def index():
         max_difficulty=MAX_DIFFICULTY,
         min_seconds=MIN_SECONDS,
         max_seconds=MAX_SECONDS,
+        method=method,
         result=result,
     )
 
@@ -376,6 +443,7 @@ def leaderboard():
 @app.route("/test", methods=["GET", "POST"])
 def test_page():
     result: GameResult | None = None
+    method = request.form.get("method") if request.form.get("method") in METHODS else DEFAULT_METHOD
 
     if request.method == "POST":
         try:
@@ -388,17 +456,19 @@ def test_page():
             flash("Write at least one movement.", "error")
         else:
             player_names = parse_names(request.form.get("player_names", ""))
-            result, error = process_upload(moves, player_names)
+            result, error = process_upload(moves, player_names, method)
             if error:
                 flash(error, "error")
 
-    return render_template("test.html", result=result)
+    return render_template("test.html", result=result, method=method)
 
 
 @app.route("/api/challenge", methods=["POST"])
 def api_new_challenge():
     difficulty = clamp_int(request.values.get("difficulty"), MIN_DIFFICULTY, MAX_DIFFICULTY, DEFAULT_DIFFICULTY)
-    return json.dumps(generate_challenge(difficulty)), 200, {"Content-Type": "application/json"}
+    moves = generate_challenge(difficulty)
+    payload = {"moves": [{"name": m, "emoji": move_emoji(m)} for m in moves]}
+    return json.dumps(payload), 200, {"Content-Type": "application/json"}
 
 
 @app.errorhandler(413)

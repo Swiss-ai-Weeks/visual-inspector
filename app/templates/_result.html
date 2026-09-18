@@ -21,7 +21,11 @@
     {% if result.timestamp is not none %}Finished at {{ '%.1f' | format(result.timestamp | float) }}s &middot; {% endif %}
     {{ result.num_people }} player{{ 's' if result.num_people != 1 }} seen &middot;
     decided by
+    {% if result.method == 'yolo' %}
+    <span class="method-tag pose" title="Local YOLOv8n-pose keypoint geometry (CPU)">YOLO pose</span>
+    {% else %}
     <span class="method-tag vss" title="VLM captions + text-NIM reasoning">VSS</span>
+    {% endif %}
   </p>
 
   {% if result.winner_image %}
@@ -37,7 +41,7 @@
 
   {% if result.timeline %}
   <details class="custom-builder" style="margin-top:20px">
-    <summary class="result-label" style="cursor:pointer">VSS caption timeline</summary>
+    <summary class="result-label" style="cursor:pointer">{{ 'Detected pose timeline' if result.method == 'yolo' else 'VSS caption timeline' }}</summary>
     <div class="event-timeline">
       {% for start, end, text in result.timeline %}
       <div class="timeline-event">
