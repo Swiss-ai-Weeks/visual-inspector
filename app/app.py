@@ -12,11 +12,12 @@ import os
 import random
 import sqlite3
 import subprocess
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, render_template, request, flash, redirect, url_for, g
+from flask import Flask, render_template, request, flash, redirect, url_for, g, jsonify
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename
 
@@ -45,6 +46,12 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-change-me")
 app.config["UPLOAD_FOLDER"] = str(UPLOAD_DIR)
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
+
+# In-process job registry for async video processing. Lives in one gunicorn
+# process (run.sh pins --workers 1 --threads N), so every poll reaches the same
+# dict. Each entry: {status: pending|done|error, result, error, source}.
+JOBS: dict[str, dict] = {}
+JOBS_LOCK = threading.Lock()
 
 
 def current_url_prefix() -> str:
@@ -247,10 +254,12 @@ def save_game(result: GameResult) -> None:
     db.commit()
 
 
-def process_upload(moves: list[str], player_names: list[str]):
-    """Shared POST handling: validate file, transcode, run pipeline, persist.
+def save_upload():
+    """Validate and persist the uploaded video. Returns (save_path, error).
 
-    Returns (result, error_message). Exactly one is non-None.
+    Runs in the request thread (it needs ``request.files``); the heavy pipeline
+    then runs off-thread in ``run_job`` so the HTTP request returns immediately
+    and the upstream proxy never hits its 504 gateway timeout.
     """
     video = request.files.get("video")
     if not video or video.filename == "":
@@ -261,20 +270,32 @@ def process_upload(moves: list[str], player_names: list[str]):
     safe_name = secure_filename(video.filename)
     save_path = UPLOAD_DIR / f"{uuid.uuid4().hex}_{safe_name}"
     video.save(save_path)
-    mp4_path = save_path
+    return save_path, None
 
+
+def run_job(job_id: str, save_path: str, moves: list[str], player_names: list[str]):
+    """Background worker: transcode, run the pipeline, persist, record outcome.
+
+    Stores the result (or error) in JOBS so the browser's poll can pick it up.
+    Needs its own app context for the DB write (there is no request here).
+    """
+    src = Path(save_path)
+    mp4_path = src
     try:
-        mp4_path = ensure_mp4(save_path)
+        mp4_path = ensure_mp4(src)
         result = run_pipeline(str(mp4_path), moves, player_names)
-        save_game(result)
-        return result, None
+        with app.app_context():
+            save_game(result)
+        with JOBS_LOCK:
+            JOBS[job_id].update(status="done", result=result)
     except Exception as exc:
         log.exception("Pipeline failed")
-        return None, f"Processing error: {exc}"
+        with JOBS_LOCK:
+            JOBS[job_id].update(status="error", error=f"Processing error: {exc}")
     finally:
-        save_path.unlink(missing_ok=True)
-        if mp4_path != save_path:
-            mp4_path.unlink(missing_ok=True)
+        src.unlink(missing_ok=True)
+        if mp4_path != src:
+            Path(mp4_path).unlink(missing_ok=True)
 
 
 def parse_names(csv: str) -> list[str]:
@@ -283,28 +304,11 @@ def parse_names(csv: str) -> list[str]:
 
 # -- Routes -------------------------------------------------------------------
 
-@app.route("/", methods=["GET", "POST"])
+@app.route("/")
 def index():
-    result: GameResult | None = None
-    source = request.form if request.method == "POST" else request.args
-    difficulty = clamp_int(source.get("difficulty"), MIN_DIFFICULTY, MAX_DIFFICULTY, DEFAULT_DIFFICULTY)
-    record_seconds = clamp_int(source.get("time"), MIN_SECONDS, MAX_SECONDS, DEFAULT_SECONDS)
+    difficulty = clamp_int(request.args.get("difficulty"), MIN_DIFFICULTY, MAX_DIFFICULTY, DEFAULT_DIFFICULTY)
+    record_seconds = clamp_int(request.args.get("time"), MIN_SECONDS, MAX_SECONDS, DEFAULT_SECONDS)
     challenge = generate_challenge(difficulty)
-
-    if request.method == "POST":
-        raw = request.form.get("challenge_json", "")
-        if raw:
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, list) and parsed:
-                    challenge = [str(m) for m in parsed]
-            except json.JSONDecodeError:
-                pass
-
-        player_names = parse_names(request.form.get("player_names", ""))
-        result, error = process_upload(challenge, player_names)
-        if error:
-            flash(error, "error")
 
     return render_template(
         "index.html",
@@ -316,7 +320,6 @@ def index():
         max_difficulty=MAX_DIFFICULTY,
         min_seconds=MIN_SECONDS,
         max_seconds=MAX_SECONDS,
-        result=result,
     )
 
 
@@ -357,26 +360,84 @@ def leaderboard():
     return render_template("leaderboard.html", rankings=rankings, gallery=gallery)
 
 
-@app.route("/test", methods=["GET", "POST"])
+@app.route("/test")
 def test_page():
-    result: GameResult | None = None
+    return render_template("test.html", result=None)
 
-    if request.method == "POST":
+
+def _parse_moves(source: str) -> tuple[list[str], str | None]:
+    """Extract the move list for a job. Returns (moves, error)."""
+    if source == "test":
         try:
-            moves = json.loads(request.form.get("moves_json", "[]"))
+            raw = json.loads(request.form.get("moves_json", "[]"))
         except json.JSONDecodeError:
-            moves = []
-        moves = [str(m).strip() for m in moves if str(m).strip()]
+            raw = []
+        moves = [str(m).strip() for m in raw if str(m).strip()]
+        return (moves, None) if moves else ([], "Write at least one movement.")
 
-        if not moves:
-            flash("Write at least one movement.", "error")
-        else:
-            player_names = parse_names(request.form.get("player_names", ""))
-            result, error = process_upload(moves, player_names)
-            if error:
-                flash(error, "error")
+    try:
+        raw = json.loads(request.form.get("challenge_json", "[]"))
+    except json.JSONDecodeError:
+        raw = []
+    moves = [str(m) for m in raw] if isinstance(raw, list) and raw else []
+    return (moves, None) if moves else ([], "No challenge to run.")
 
-    return render_template("test.html", result=result)
+
+@app.route("/jobs", methods=["POST"])
+def create_job():
+    """Start processing off-thread and hand back a job id immediately.
+
+    The response returns in well under a second, so the upstream proxy's ~60s
+    gateway timeout can never fire on the submit; the browser then polls
+    /jobs/<id> (also sub-second each) until the pipeline finishes.
+    """
+    source = request.form.get("source", "index")
+    moves, error = _parse_moves(source)
+    if error:
+        return jsonify(error=error), 400
+
+    player_names = parse_names(request.form.get("player_names", ""))
+    save_path, error = save_upload()
+    if error:
+        return jsonify(error=error), 400
+
+    job_id = uuid.uuid4().hex
+    with JOBS_LOCK:
+        JOBS[job_id] = {"status": "pending", "result": None, "error": None, "source": source}
+    threading.Thread(
+        target=run_job,
+        args=(job_id, str(save_path), moves, player_names),
+        daemon=True,
+    ).start()
+    return jsonify(job_id=job_id)
+
+
+@app.route("/jobs/<job_id>")
+def job_status(job_id):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job is None:
+            return jsonify(status="unknown"), 404
+        status, result, error, source = (
+            job["status"], job["result"], job["error"], job["source"],
+        )
+
+    if status == "pending":
+        return jsonify(status="pending")
+
+    with JOBS_LOCK:
+        JOBS.pop(job_id, None)  # one-shot: result is delivered on this poll
+
+    if status == "error":
+        return jsonify(status="error", error=error)
+
+    back_href, back_label = (
+        ("/test", "New Test") if source == "test" else ("/", "Play again")
+    )
+    html = render_template(
+        "_result.html", result=result, back_href=back_href, back_label=back_label,
+    )
+    return jsonify(status="done", html=html)
 
 
 @app.route("/api/challenge", methods=["POST"])

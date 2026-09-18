@@ -30,5 +30,81 @@
 
     {% block content %}{% endblock %}
   </div>
+
+  <script>
+  /* Async video processing: submit returns a job id, then we poll until the
+     pipeline finishes. Keeps every HTTP request sub-second so the upstream
+     proxy's ~60s gateway timeout never fires. */
+  window.MoveMatch = (function () {
+    const PREFIX        = "{{ url_prefix }}";
+    const POLL_INTERVAL = 2000;    // ms between status polls
+    const POLL_TIMEOUT  = 180000;  // give up after 3 minutes
+
+    async function submit(form, source) {
+      const fd = new FormData(form);
+      fd.set('source', source);
+      const res = await fetch(PREFIX + '/jobs', { method: 'POST', body: fd });
+      if (!res.ok) {
+        let msg = 'Upload failed.';
+        try { msg = (await res.json()).error || msg; } catch (e) {}
+        throw new Error(msg);
+      }
+      return (await res.json()).job_id;
+    }
+
+    function poll(jobId, onDone, onError) {
+      const started = Date.now();
+      const tick = async () => {
+        if (Date.now() - started > POLL_TIMEOUT) {
+          onError('Still processing after 3 minutes — the clip may be too long. '
+                + 'It may still finish in the background; check the leaderboard shortly.');
+          return;
+        }
+        try {
+          const res  = await fetch(PREFIX + '/jobs/' + jobId);
+          const data = await res.json();
+          if (data.status === 'done')        onDone(data.html);
+          else if (data.status === 'error')  onError(data.error || 'Processing error.');
+          else if (data.status === 'unknown') onError('Lost track of the job. Please retry.');
+          else setTimeout(tick, POLL_INTERVAL);
+        } catch (e) {
+          setTimeout(tick, POLL_INTERVAL);  // transient network hiccup; keep polling
+        }
+      };
+      tick();
+    }
+
+    function showError(container, msg) {
+      const div = document.createElement('div');
+      div.className = 'flash error';
+      div.textContent = msg;
+      container.innerHTML = '';
+      container.appendChild(div);
+    }
+
+    /* Wire a form to the async flow. `source` is 'index' or 'test'. */
+    function run(form, source, loading, submitBtn, container) {
+      if (submitBtn) submitBtn.disabled = true;
+      loading.classList.add('active');
+      container.innerHTML = '';
+      const done = (fn) => {
+        loading.classList.remove('active');
+        if (submitBtn) submitBtn.disabled = false;
+        fn();
+      };
+      submit(form, source)
+        .then((jobId) => poll(jobId,
+          (html) => done(() => {
+            container.innerHTML = html;
+            container.scrollIntoView({ behavior: 'smooth' });
+          }),
+          (msg) => done(() => showError(container, msg)),
+        ))
+        .catch((err) => done(() => showError(container, err.message)));
+    }
+
+    return { run };
+  })();
+  </script>
 </body>
 </html>

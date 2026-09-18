@@ -104,9 +104,7 @@
   </form>
 </div>
 
-{% if result %}
-{% include "_result.html" %}
-{% endif %}
+<div id="result-container"></div>
 
 <div class="loading-overlay" id="loading">
   <div class="spinner-ring"></div>
@@ -167,9 +165,19 @@ input.addEventListener('change', () => {
   zone.addEventListener(evt, () => zone.classList.remove('drag-over'))
 );
 
-document.getElementById('form').addEventListener('submit', () => {
-  document.getElementById('submit-btn').disabled = true;
-  document.getElementById('loading').classList.add('active');
+function runJob() {
+  MoveMatch.run(
+    document.getElementById('form'),
+    'index',
+    document.getElementById('loading'),
+    document.getElementById('submit-btn'),
+    document.getElementById('result-container'),
+  );
+}
+
+document.getElementById('form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  runJob();
 });
 
 /* -- Mode switcher -- */
@@ -254,8 +262,7 @@ function submitRecording() {
   dt.items.add(file);
   input.files = dt.files;
 
-  document.getElementById('loading').classList.add('active');
-  document.getElementById('form').submit();
+  runJob();
 }
 
 function stopCamera() {

@@ -53,11 +53,7 @@
   </form>
 </div>
 
-{% if result %}
-{% set back_href = '/test' %}
-{% set back_label = 'New Test' %}
-{% include "_result.html" %}
-{% endif %}
+<div id="result-container"></div>
 
 <div class="loading-overlay" id="loading">
   <div class="spinner-ring"></div>
@@ -110,13 +106,18 @@ moveInput.addEventListener('keydown', e => {
 document.getElementById('clear-seq').addEventListener('click', () => { moves = []; render(); });
 
 document.getElementById('test-form').addEventListener('submit', e => {
+  e.preventDefault();
   if (!moves.length) {
-    e.preventDefault();
     alert('Add at least one movement.');
     return;
   }
-  document.getElementById('submit-btn').disabled = true;
-  document.getElementById('loading').classList.add('active');
+  MoveMatch.run(
+    document.getElementById('test-form'),
+    'test',
+    document.getElementById('loading'),
+    document.getElementById('submit-btn'),
+    document.getElementById('result-container'),
+  );
 });
 
 render();
