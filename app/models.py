@@ -12,7 +12,6 @@ MOVE_POOL = [
     "put your hands on your head",
     "crouch down",
     "clap your hands",
-    "jump",
     "touch your head",
     "wave",
     "point at the camera",
