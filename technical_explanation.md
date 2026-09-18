@@ -162,3 +162,94 @@ framework required.
 | `conf_th` (pose) | `pose_people` | 0.5 | Minimum pose-detection confidence |
 | `ratio_th` | `arms_crossed` | 0.55 | Wrist-gap / shoulder-width cutoff for "crossed" |
 | `conf_th` (person) | `detect_people` | 0.35 | Minimum person-detection confidence (YOLOX) |
+
+---
+
+# VSS Backend Architecture
+
+The notebook talks to a **VSS** backend over HTTP (`caption_video` → `/generate_vlm_captions`,
+`first_performer` → the text NIM). This section documents how that backend is deployed
+(`deploy/docker/local_deployment_single_gpu`).
+
+## Version & shape
+
+- **VSS engine 2.4.1** (`nvcr.io/nvidia/blueprint/vss-engine:2.4.1`), docker-compose.
+- Backend API on **`:8100`**, web UI on **`:9100`**.
+- One GPU container — **`via-server`**, pinned to **GPU 1** (`NVIDIA_VISIBLE_DEVICES=1`) — plus
+  CPU-only infra containers: **neo4j** (graph DB), **milvus** (vector DB), **arango**, **minio**,
+  **elasticsearch**.
+- The VLM and the CA-RAG models run as **separate external NIM containers**, reached over
+  `host.docker.internal`. They are *not* part of the compose file and must be deployed independently (more info on https://build.nvidia.com/nvidia/cosmos3-nano-reasoner/deploy, but use NIM_CACHE_PATH, the right free port coherent with config.yaml and the right gpu written as '"device=0"').
+
+## Models on the text / CA-RAG side (`config.yaml`)
+
+| Model | Port | Use |
+|-------|------|-----|
+| **nvidia/nemotron-3.5-lightning** (30b-a3b) | `:8007` | `chat_llm` + `summarization_llm` + `notification_llm` — graph ingestion & retrieval, caption→summary aggregation, alert notifications |
+| **nvidia/llama-nemotron-embed-vl-1b-v2** | `:8006` | Embeddings for the neo4j graph DB and milvus vector DB |
+| **nvidia/llama-nemotron-rerank-vl-1b-v2** | `:8005` | Reranker for retrieval |
+
+These power **CA-RAG**: captions are ingested into the graph/vector DBs, then chat/summary
+queries retrieve + rerank + reason over them.
+
+## Vision model (`.env`)
+
+`VLM_MODEL_TO_USE=openai-compat` → **`nvidia/cosmos3-nano-reasoner`** (served by the
+`cosmos3-reasoner` NIM) at **`:38011`**. Its job is **dense captioning** of each video chunk:
+VSS samples **≤5 frames per chunk** (the model caps a prompt at 5 images) and asks the VLM to
+describe them. This is the model that receives the Set-of-Marks overlaid frames.
+
+## CV detection + tracking (`DISABLE_CV_PIPELINE=false`)
+
+Running inside `via-server` on GPU 1:
+
+- **GroundingDINO** detector (auto-downloaded from NGC) finds people.
+- **NvDCF tracker** (+ **ReID**, + **SAM2** engines built at first start) assigns each person a
+  **stable tracking ID**.
+- The IDs are **burned onto the frames** (Set-of-Marks) *before* the VLM sees them, so the VLM
+  gets one view per frame: the numbered one.
+- Detector cadence = `GDINO_INFERENCE_INTERVAL` (default 1 = detect every other frame); the
+  tracker labels **every** frame in between, so the overlay is full-frame-rate.
+
+Setup + troubleshooting detail: see `deploy/docker/local_deployment_single_gpu/CV_TRACKING_SETUP.md`.
+
+## Scheme 1 — request pipeline
+
+```
+                                 ┌──────────────────── GPU 1 (via-server) ────────────────────┐
+  video ──▶ decode ──▶ CV pipeline: GDINO detect + NvDCF track (+ReID) ──▶ Set-of-Marks overlay
+                                 └──────────────────────────────┬──────────────────────────────┘
+                                                                │ sample ≤5 frames/chunk
+                                                                ▼
+                                              VLM dense caption  (cosmos3, GPU 1, :38011)
+                                                                │  timestamped captions
+                                                                ▼
+                        ┌──────────────────── GPU 0 (CA-RAG NIMs) ────────────────────┐
+                        │  embed (:8006) ─▶ store        rerank (:8005) ─▶ retrieve    │
+                        │            nemotron-3.5-lightning LLM (:8007) summarize/reason│
+                        └───────────────────────────────┬──────────────────────────────┘
+                                                         │        (graph=neo4j, vector=milvus — CPU)
+                                                         ▼
+                                             summary / chat answer ──▶ client (:8100 / UI :9100)
+```
+
+## Scheme 2 — model placement across the two GPUs
+
+```
+┌─────────────────── GPU 0  (~92 GB used — saturated) ───────────────────┐
+│  nemotron-3.5-lightning  (vLLM)   :8007   ~77 GB   CA-RAG LLM           │
+│  llama-nemotron-embed-vl-1b-v2    :8006   ~8 GB    embeddings           │
+│  llama-nemotron-rerank-vl-1b-v2   :8005   ~6 GB    reranker             │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────── GPU 1  (~60 GB used · ~35 GB free) ─────────────────┐
+│  cosmos3 VLM             (vLLM)   :38011  ~49 GB   dense captioning     │
+│  via-server: decode + CV pipeline (GDINO/NvDCF/ReID/SAM2)  ~10 GB       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+CPU-only containers: neo4j · milvus · arango · minio · elasticsearch
+```
+
+The cosmos NIM is memory-capped with `NIM_GPU_MEMORY_UTILIZATION=0.50` specifically to leave
+headroom on GPU 1 for the CV pipeline's TensorRT engine builds and inference. This might be optimized to give more free RAM to the cache of cosmos3 at its startup.
+

@@ -21,7 +21,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename
 
 from models import MOVE_POOL, GameResult, move_emoji
-from vss import find_winner, winner_snapshot
+from vss import find_winner, fetch_cv_metadata, start_order, winner_snapshot_cv
 
 log = logging.getLogger(__name__)
 
@@ -150,31 +150,61 @@ def ensure_mp4(src: Path) -> Path:
 
 
 def run_pipeline(video_path: str, moves: list[str], player_names: list[str]) -> GameResult:
-    """VSS perception (pose fallback) -> winner, boxed at the winning moment."""
+    """VSS perception -> winner (tracker id), named + boxed from CV metadata.
+
+    The winner comes back as a stable tracker id. We map it to a typed name by
+    STARTING position (people ordered left-to-right by their first-seen bbox), and
+    box it straight from the tracker's own bbox so the box matches the caption.
+    """
     res = find_winner(video_path, moves, chunk_duration=CHUNK_DURATION,
                       chunk_overlap_duration=CHUNK_OVERLAP)
 
-    winner_number = int(res.get("winner") or 0)
+    winner_id = int(res.get("winner", -1))
     timestamp = res.get("timestamp")
     num_people = int(res.get("num_people") or 0)
 
-    winner_name = None
-    if winner_number:
-        idx = winner_number - 1
-        if 0 <= idx < len(player_names) and player_names[idx].strip():
-            winner_name = player_names[idx].strip()
-        else:
-            winner_name = f"Person {winner_number}"
+    # tracker ids are 0-based (0 is a real person), so "nobody" is timestamp None.
+    if timestamp is None or winner_id < 0:
+        return GameResult(
+            moves=moves,
+            winner_number=0,
+            winner_name=None,
+            timestamp=None,
+            num_people=num_people,
+            method=res.get("method", "vss"),
+            winner_image=None,
+            timeline=res.get("timeline", []),
+        )
 
+    winner_number = 0
+    winner_name = None
     winner_image = None
-    if winner_number:
+    meta_path = None
+    try:
+        meta_path = fetch_cv_metadata(res["cv_marker"])
+        ranks, n_meta = start_order(meta_path)
+        num_people = n_meta or num_people
+        winner_number = ranks.get(winner_id, -1) + 1  # 1-based start rank; 0 if absent
+
+        idx = winner_number - 1
+        if winner_number and 0 <= idx < len(player_names) and player_names[idx].strip():
+            winner_name = player_names[idx].strip()
+        elif winner_number:
+            winner_name = f"Person {winner_number}"
+        else:
+            winner_name = f"Player {winner_id}"
+
         fname = f"{uuid.uuid4().hex}.jpg"
-        try:
-            winner_snapshot(video_path, timestamp, winner_number, num_people,
-                            SNAPSHOT_DIR / fname)
-            winner_image = fname
-        except Exception:
-            log.warning("Winner snapshot failed", exc_info=True)
+        winner_snapshot_cv(video_path, timestamp, winner_id, meta_path,
+                           SNAPSHOT_DIR / fname)
+        winner_image = fname
+    except Exception:
+        log.warning("CV winner resolution failed", exc_info=True)
+        if winner_name is None:
+            winner_name = f"Player {winner_id}"
+    finally:
+        if meta_path:
+            Path(meta_path).unlink(missing_ok=True)
 
     return GameResult(
         moves=moves,
