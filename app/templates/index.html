@@ -14,7 +14,7 @@
         <button type="button" class="mode-btn {{ 'active' if method == 'yolo' }}" id="btn-yolo" onclick="setMethod('yolo')">
           🤸 YOLO
         </button>
-        <button type="button" class="mode-btn {{ 'active' if method == 'vss' }}" id="btn-vss" onclick="setMethod('vss')">
+        <button type="button" class="mode-btn {{ 'active' if method == 'vss' }}" id="btn-vss" onclick="setMethod('vss')"{% if not vss_available %} disabled title="VSS backend not reachable"{% endif %}>
           🧠 VSS
         </button>
       </div>

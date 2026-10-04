@@ -9,16 +9,19 @@ import json
 import logging
 import os
 import random
+import shutil
 import sqlite3
 import subprocess
 import uuid
 from datetime import datetime, timezone
+from functools import cache
 from pathlib import Path
 
 from flask import Flask, render_template, request, flash, redirect, url_for, g
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename
 
+import vss
 import yolo
 from models import MOVE_POOL, GameResult, move_emoji
 from vss import find_winner, fetch_cv_metadata, start_order, winner_snapshot_cv
@@ -60,7 +63,8 @@ def current_url_prefix() -> str:
     if not prefix:
         host = request.headers.get("X-Forwarded-Host", request.host)
         port = request.environ.get("SERVER_PORT", "")
-        if port and ".apps." in host:
+        # Coder workspaces (NVIDIA Launchpad) serve apps under /coder/proxy/<port>.
+        if port and ".apps." in host and os.environ.get("CODER"):
             prefix = f"/coder/proxy/{port}"
 
     return prefix
@@ -68,7 +72,8 @@ def current_url_prefix() -> str:
 
 @app.context_processor
 def inject_helpers():
-    return {"url_prefix": current_url_prefix(), "move_emoji": move_emoji}
+    return {"url_prefix": current_url_prefix(), "move_emoji": move_emoji,
+            "vss_available": vss.is_available()}
 
 
 # -- Database -----------------------------------------------------------------
@@ -137,12 +142,32 @@ def clamp_int(value, lo: int, hi: int, default: int) -> int:
         return default
 
 
+@cache
+def ffmpeg_exe() -> str:
+    """System ffmpeg if on PATH, else the static binary bundled by imageio-ffmpeg."""
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    import imageio_ffmpeg
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
+def resolve_method(requested: str | None) -> str:
+    """Validate the requested detector, falling back to YOLO when the VSS
+    backend isn't reachable from this machine."""
+    method = requested if requested in METHODS else DEFAULT_METHOD
+    if method == "vss" and not vss.is_available():
+        flash("VSS backend not reachable, using YOLO pose instead.", "error")
+        method = "yolo"
+    return method
+
+
 def ensure_mp4(src: Path) -> Path:
     """Re-encode to H.264/AAC MP4 so the VSS uploader accepts it."""
     dst = src.with_name(src.stem + "_vst.mp4")
     proc = subprocess.run(
         [
-            "ffmpeg", "-y",
+            ffmpeg_exe(), "-y",
             # Browser MediaRecorder WebM has streaming headers, no seek index and
             # often no declared duration; probe generously and rebuild timestamps
             # so ffmpeg doesn't bail at container open.
@@ -370,7 +395,7 @@ def index():
     source = request.form if request.method == "POST" else request.args
     difficulty = clamp_int(source.get("difficulty"), MIN_DIFFICULTY, MAX_DIFFICULTY, DEFAULT_DIFFICULTY)
     record_seconds = clamp_int(source.get("time"), MIN_SECONDS, MAX_SECONDS, DEFAULT_SECONDS)
-    method = source.get("method") if source.get("method") in METHODS else DEFAULT_METHOD
+    method = resolve_method(source.get("method"))
     challenge = generate_challenge(difficulty)
 
     if request.method == "POST":
@@ -443,7 +468,7 @@ def leaderboard():
 @app.route("/test", methods=["GET", "POST"])
 def test_page():
     result: GameResult | None = None
-    method = request.form.get("method") if request.form.get("method") in METHODS else DEFAULT_METHOD
+    method = resolve_method(request.form.get("method"))
 
     if request.method == "POST":
         try:
@@ -475,3 +500,13 @@ def api_new_challenge():
 def too_large(_):
     flash(f"File too large (max {MAX_MB} MB).", "error")
     return redirect(url_for("index")), 413
+
+
+if __name__ == "__main__":
+    # Cross-platform entry point (works on Windows, where gunicorn doesn't).
+    from waitress import serve
+
+    host = os.environ.get("HOST", "127.0.0.1")
+    port = int(os.environ.get("PORT", "5000"))
+    print(f"MoveMatch on http://{host}:{port}")
+    serve(app, host=host, port=port, threads=4, channel_timeout=1200)

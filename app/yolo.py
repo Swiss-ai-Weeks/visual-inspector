@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import urllib.request
 from math import hypot
 from pathlib import Path
@@ -61,11 +62,14 @@ ACTION_LABELS = {
 }
 
 _net: cv2.dnn.Net | None = None
+# cv2.dnn.Net isn't thread-safe; waitress serves requests on threads.
+_net_lock = threading.Lock()
 
 
 # -- Model --------------------------------------------------------------------
 
 def _load_net() -> cv2.dnn.Net:
+    """Load (downloading if needed) the pose net. Caller must hold _net_lock."""
     global _net
     if _net is None:
         if not MODEL_PATH.exists():
@@ -95,12 +99,13 @@ def _infer(frame) -> list[dict]:
     """Run one frame through the pose net. Returns a list of detections, each
     ``{"box": (x0, y0, x1, y1), "score": float, "kpts": ndarray(17, 3)}`` in
     original pixel coordinates."""
-    net = _load_net()
     padded, scale, pad_x, pad_y = _letterbox(frame)
     blob = cv2.dnn.blobFromImage(padded, 1 / 255.0, (INPUT_SIZE, INPUT_SIZE),
                                  swapRB=True, crop=False)
-    net.setInput(blob)
-    out = net.forward()          # (1, 56, 8400)
+    with _net_lock:
+        net = _load_net()
+        net.setInput(blob)
+        out = net.forward()      # (1, 56, 8400)
     out = np.squeeze(out, 0).T   # (8400, 56): cx, cy, w, h, conf, 17*(x, y, c)
 
     scores = out[:, 4]

@@ -42,27 +42,41 @@ At the top of the app there's a toggle to choose how the video is analyzed:
 
 ## 🚀 Running It
 
-MoveMatch is a small Flask app (`app/`). What it needs depends on the detector mode:
+MoveMatch is a small Flask app (`app/`) that runs on Linux, macOS and Windows. What it needs depends on the detector mode:
 
-- **Always:** **Python ≥ 3.11** with the deps in `pyproject.toml` (`flask`, `gunicorn`, `requests`, `opencv-python`, `numpy`) and **ffmpeg** on `PATH` (clips are transcoded to H.264 MP4).
-- **YOLO mode only:** nothing extra — the pose model (~13 MB) auto-downloads to `models/yolov8n-pose.onnx` on first use and runs on the CPU.
-- **VSS mode only:** a **VSS backend** reachable at `:8100` (VLM captions) and a **text NIM** at `:38011` (reasoning), plus the **docker CLI** (the winner's CV metadata is copied out of the `via-server` container with `docker cp`). See the **VSS Backend** section below.
+- **Always:** **Python ≥ 3.11** and the deps in `pyproject.toml`. ffmpeg is used to transcode clips to H.264 MP4: a system `ffmpeg` on `PATH` is used if present, otherwise the binary bundled with `imageio-ffmpeg`.
+- **YOLO mode only:** nothing extra — the pose model (~13 MB) ships in `models/yolov8n-pose.onnx` (re-downloaded if missing) and runs on the CPU.
+- **VSS mode only:** a **VSS backend** reachable at `VSS_RTVLM_URL` (VLM captions) and a **text NIM** at `VSS_LLM_URL` (reasoning). The **docker CLI** is only needed for the boxed winner snapshot, when the backend runs on the same host (the CV metadata is copied out of the `via-server` container with `docker cp`). See the **VSS Backend** section below. If the backend isn't reachable, the VSS toggle is greyed out and the app runs in YOLO mode.
+
+Install:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install .                    # installs the dependencies only
+```
 
 Start the server:
 
 ```bash
-cd app
-./run.sh          # gunicorn on http://127.0.0.1:5100
+app/run.sh                       # Linux/macOS: gunicorn on http://127.0.0.1:5000
+python app/app.py                # any OS (incl. Windows): waitress on http://127.0.0.1:5000
 ```
 
-`run.sh` reads a few environment variables (all optional):
+Both read a few environment variables (all optional):
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
+| `HOST` / `PORT` | `127.0.0.1` / `5000` | bind address (use `HOST=0.0.0.0` to expose on the LAN) |
 | `VSS_RTVLM_URL` | `http://127.0.0.1:8100` | VLM caption endpoint |
 | `VSS_LLM_URL` | `http://127.0.0.1:38011` | text-NIM reasoner |
-| `MOVEMATCH_VENV` | `/home/nvidia/Documents/.venv` | virtualenv to run under |
+| `VIA_CONTAINER` | `local_deployment_single_gpu-via-server-1` | VSS container holding the CV metadata |
 | `SECRET_KEY` | `dev-change-me` | Flask session secret |
+| `KEEP_UPLOADS` | `0` | `1` keeps uploaded clips in `app/uploads/` |
+| `MOVEMATCH_VENV` | repo `.venv`, else `python3` on `PATH` | virtualenv `run.sh` runs under |
+| `WEB_WORKERS` | `2` | gunicorn worker processes (`run.sh` only) |
+
+> Camera recording in the browser needs a secure context: open the app via `http://localhost` / `127.0.0.1`, or put it behind HTTPS when accessing it from another device.
 
 Pages:
 

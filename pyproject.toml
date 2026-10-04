@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "MoveMatch"
 version = "0.2.0"
@@ -6,11 +10,15 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "flask>=3.0",
-    "gunicorn>=22.0",
+    "gunicorn>=22.0; sys_platform != 'win32'",
+    "waitress>=3.0",
     "requests>=2.31",
     "opencv-python>=4.9",
     "numpy>=1.26",
+    "imageio-ffmpeg>=0.5",
 ]
 
-[project.scripts]
-movematch = "app:app"
+# The app is run from app/ (run.sh or `python app/app.py`), not installed as a
+# package: `pip install .` only pulls in the dependencies.
+[tool.setuptools]
+packages = []

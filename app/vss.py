@@ -19,6 +19,8 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 
 import cv2
@@ -53,6 +55,26 @@ _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 # =============================================================================
 # VSS path -- VLM captions + text-NIM reasoning
 # =============================================================================
+
+_AVAIL_TTL = 30.0
+_avail: tuple[float, bool] | None = None
+
+
+def is_available() -> bool:
+    """True if both the RTVLM and the text NIM answer. Cached for _AVAIL_TTL
+    seconds so page renders don't probe the backend every time."""
+    global _avail
+    now = time.monotonic()
+    if _avail is not None and now - _avail[0] < _AVAIL_TTL:
+        return _avail[1]
+    try:
+        ok = all(requests.get(u, timeout=2).ok
+                 for u in (f"{RTVLM}/models", f"{LLM}/v1/models"))
+    except requests.RequestException:
+        ok = False
+    _avail = (now, ok)
+    return ok
+
 
 def _first_model(url: str, path: str) -> str:
     return requests.get(f"{url}{path}", timeout=15).json()["data"][0]["id"]
@@ -93,7 +115,14 @@ def caption_video(path, chunk_duration: int = 2, chunk_overlap_duration: int = 1
     BEFORE this run, so fetch_cv_metadata can pick out the file this run created.
     """
     path = Path(path)
-    fused_before = _list_fused()
+    try:
+        fused_before = _list_fused()
+    except (OSError, subprocess.CalledProcessError):
+        # No docker / no via-server container here (e.g. remote VSS backend):
+        # captions still work, only the boxed winner snapshot is lost.
+        log.warning("Cannot list CV metadata in %s; winner snapshot disabled",
+                    VIA_CONTAINER, exc_info=True)
+        fused_before = []
     cv_marker = fused_before[-1][0] if fused_before else 0
     with path.open("rb") as f:
         file_id = requests.post(
@@ -202,7 +231,8 @@ def fetch_cv_metadata(cv_marker: int, out_path: str | None = None) -> str:
         raise RuntimeError("No fused CV metadata JSON in the container.")
     newer = [r for r in rows if r[0] > cv_marker]
     remote_path = (newer or rows)[-1][1]
-    out_path = out_path or f"/tmp/cv_metadata_{os.path.basename(remote_path)}"
+    out_path = out_path or os.path.join(
+        tempfile.gettempdir(), f"cv_metadata_{os.path.basename(remote_path)}")
     subprocess.check_call(
         ["docker", "cp", f"{VIA_CONTAINER}:{remote_path}", out_path])
     return out_path
