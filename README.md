@@ -48,19 +48,21 @@ MoveMatch is a small Flask app (`app/`) that runs on Linux, macOS and Windows. W
 - **YOLO mode only:** nothing extra — the pose model (~13 MB) ships in `models/yolov8n-pose.onnx` (re-downloaded if missing) and runs on the CPU.
 - **VSS mode only:** a **VSS backend** reachable at `VSS_RTVLM_URL` (VLM captions) and a **text NIM** at `VSS_LLM_URL` (reasoning). The **docker CLI** is only needed for the boxed winner snapshot, when the backend runs on the same host (the CV metadata is copied out of the `via-server` container with `docker cp`). See the **VSS Backend** section below. If the backend isn't reachable, the VSS toggle is greyed out and the app runs in YOLO mode.
 
-Install:
+**Linux/macOS** — one command:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install .                    # installs the dependencies only
+app/run.sh                       # gunicorn on http://127.0.0.1:5000
 ```
 
-Start the server:
+On first run, `run.sh` creates `.venv/` in the repo root and installs the dependencies into it (with [uv](https://docs.astral.sh/uv/) if installed, which also downloads Python 3.12 when needed; otherwise with the first Python ≥ 3.11 on `PATH`). The dependencies are reinstalled whenever `pyproject.toml` changes.
+
+**Windows (or any OS without gunicorn)** — set up the venv once, then start with waitress:
 
 ```bash
-app/run.sh                       # Linux/macOS: gunicorn on http://127.0.0.1:5000
-python app/app.py                # any OS (incl. Windows): waitress on http://127.0.0.1:5000
+python -m venv .venv             # Python >= 3.11
+.venv\Scripts\activate           # Linux/macOS: source .venv/bin/activate
+pip install .                    # installs the dependencies only
+python app/app.py                # waitress on http://127.0.0.1:5000
 ```
 
 Both read a few environment variables (all optional):
@@ -73,7 +75,7 @@ Both read a few environment variables (all optional):
 | `VIA_CONTAINER` | `local_deployment_single_gpu-via-server-1` | VSS container holding the CV metadata |
 | `SECRET_KEY` | `dev-change-me` | Flask session secret |
 | `KEEP_UPLOADS` | `0` | `1` keeps uploaded clips in `app/uploads/` |
-| `MOVEMATCH_VENV` | repo `.venv`, else `python3` on `PATH` | virtualenv `run.sh` runs under |
+| `MOVEMATCH_VENV` | repo `.venv` (auto-created) | existing virtualenv for `run.sh` to use as-is |
 | `WEB_WORKERS` | `2` | gunicorn worker processes (`run.sh` only) |
 
 > Camera recording in the browser needs a secure context: open the app via `http://localhost` / `127.0.0.1`, or put it behind HTTPS when accessing it from another device.
